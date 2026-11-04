@@ -171,13 +171,19 @@ def items(rows, summary, positions=None, color=chess.WHITE):
         found[f"G{n}"] = dict(row=r, text=(
             f"[G{n}] {move_number(r)}{r['san']} - {r['cls']}, {r['phase']}, the 2nd-best move was {r['multipv_gap']:.1f} win% worse\n"
             f"     FEN before: {r['fen_before']}"))
-    shots = sorted(((rows[k - 1], r) for k, r in enumerate(rows) if k and r["player"] == "Stockfish" and r["cls"] == "Great"),
-                   key=lambda pair: -(pair[1].get("multipv_gap") or 0))[:MAX_SHOTS]
-    for n, (prev, r) in enumerate(shots, 1):
+    # an opponent shot = a Stockfish Great move that isn't a recapture; the shot was usually set up 1-2 moves earlier,
+    # so Claude gets its own last move before the shot and the one before that
+    shots = sorted(((k, r) for k, r in enumerate(rows) if k and r["player"] == "Stockfish" and r["cls"] == "Great"
+                    and not r.get("recapture")), key=lambda pair: -(pair[1].get("multipv_gap") or 0))[:MAX_SHOTS]
+    for n, (k, r) in enumerate(shots, 1):
+        prev, earlier = rows[k - 1], (rows[k - 3] if k >= 3 else None)
         found[f"S{n}"] = dict(row=prev, text=(
-            f"[S{n}] You played {move_number(prev)}{prev['san']} ({prev['cls']}) from FEN {prev['fen_before']}\n"
-            f"     then Stockfish found {move_number(r)}{r['san']}!! (its 2nd best was {r['multipv_gap']:.1f} win% worse); "
-            f"line: {r['best_pv_san']}"))
+            f"[S{n}] Stockfish found {move_number(r)}{r['san']}!! (its 2nd best was {r['multipv_gap']:.1f} win% worse); "
+            f"line: {r['best_pv_san']}\n"
+            f"     Your move just before: {move_number(prev)}{prev['san']} ({prev['cls']}) from FEN {prev['fen_before']}\n"
+            + (f"     Your move before that: {move_number(earlier)}{earlier['san']} ({earlier['cls']}) from FEN {earlier['fen_before']}\n"
+               if earlier else "") +
+            f"     Which of these two moves allowed the shot, and what should you have seen?"))
     for n, slide in enumerate((summary.get("calibration") or {}).get("missed_slides", []), 1):
         found[f"D{n}"] = dict(row=None, slide=slide, text=(
             f"[D{n}] Moves {slide['from_move']} to {slide['to_move']}: engine win% fell {slide['win_drop']:.1f} while you said "

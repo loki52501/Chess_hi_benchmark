@@ -43,12 +43,13 @@ def phase(board):
 def is_book(sans):   # sans = every move of the game up to and including this one
     return len(sans) <= 8 and any(line[:len(sans)] == sans for line in BOOK_LINES)
 
-def classify(loss, played_best, cp_best, cp_after, win_best, win_second=None, book=False):
-    """chess.com-style class. All numbers are from the mover's side; win_second = engine's 2nd-best line (None if only one move)."""
+def classify(loss, played_best, cp_best, cp_after, win_best, win_second=None, book=False, recapture=False):
+    """chess.com-style class. All numbers are from the mover's side; win_second = engine's 2nd-best line (None if only one move).
+    A recapture on the square the previous move captured on, or an only legal move, is never Great (still Best)."""
     if book:
         return "Book"
     if played_best:
-        return "Great" if win_second is not None and win_best - win_second >= 15 else "Best"
+        return "Great" if win_second is not None and win_best - win_second >= 15 and not recapture else "Best"
     if cp_best >= 200 and cp_after < 100:   # was winning (or had a mate) and let it slip
         return "Miss"
     for limit, name in ((2, "Excellent"), (5, "Good"), (10, "Inaccuracy"), (20, "Mistake")):
@@ -89,13 +90,16 @@ def review_pgn(game, engine, claude_moves=None):
     who = players(game)
     board, moves, sans = game.board(), list(game.mainline_moves()), []
     lines = evaluate(engine, board)
-    rows = []
+    rows, captured_on = [], None   # captured_on: the square the previous move captured on
     for ply, move in enumerate(moves, 1):
         mover, fen, ph = board.turn, board.fen(), phase(board)
         (cp_best, best_pv), second = lines[0], (lines[1] if len(lines) > 1 else None)
         san = board.san(move)
         best_san = board.san(best_pv[0]) if best_pv else san
         best_line = pv_san(board, best_pv)
+        capture = board.is_capture(move)
+        recapture = capture and move.to_square == captured_on
+        captured_on = move.to_square if capture else None
         sans.append(san)
         board.push(move)
         lines = evaluate(engine, board)
@@ -104,9 +108,9 @@ def review_pgn(game, engine, claude_moves=None):
         win_before, win_after = win_pct(cp_best), win_pct(cp_after)
         loss = 0.0 if played_best else max(0.0, win_before - win_after)
         win_second = win_pct(second[0]) if second else None
-        cls = classify(loss, played_best, cp_best, cp_after, win_before, win_second, is_book(sans))
+        cls = classify(loss, played_best, cp_best, cp_after, win_before, win_second, is_book(sans), recapture)
         row = dict(ply=ply, side="white" if mover == chess.WHITE else "black", player=who[mover],
-                   fen_before=fen, san=san, best_san=best_san, best_pv_san=best_line,
+                   fen_before=fen, san=san, best_san=best_san, best_pv_san=best_line, recapture=recapture,
                    cp_before=cp_best, cp_after=cp_after, win_before=round(win_before, 2),
                    win_after=round(win_after, 2), loss=round(loss, 2), cls=cls, phase=ph,
                    multipv_gap=round(win_before - win_second, 2) if second else None)   # how much worse the 2nd-best move was

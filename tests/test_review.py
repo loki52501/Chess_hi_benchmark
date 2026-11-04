@@ -38,6 +38,10 @@ def test_great_needs_15_percent_gap():
     assert review.classify(0, True, 300, 300, win_best=70, win_second=55.1) == "Best"
     assert review.classify(0, True, 300, 300, win_best=70, win_second=None) == "Best"   # only one legal move
 
+def test_recapture_is_never_great():
+    assert review.classify(0, True, 300, 300, win_best=90, win_second=10, recapture=True) == "Best"
+    assert review.classify(0, True, 300, 300, win_best=90, win_second=10, recapture=False) == "Great"
+
 def test_miss_boundaries():
     assert review.classify(30, False, cp_best=200, cp_after=99, win_best=67) == "Miss"
     assert review.classify(30, False, cp_best=review.MATE_CP - 3, cp_after=50, win_best=100) == "Miss"   # missed a mate
@@ -99,6 +103,23 @@ def test_miss_on_hanging_queen():
     row = review_one_move(HANGING_QUEEN, "h3")
     assert row["cls"] == "Miss" and row["best_san"] == "Rxd5"
     assert row["cp_before"] >= 200 and row["cp_after"] < 100
+
+@needs_stockfish
+def test_queen_trade_recapture_is_best_not_great():
+    game = chess.pgn.Game(headers={"White": "Claude (test)", "Black": "Stockfish (test)"})
+    board = chess.Board("3qk3/8/8/8/8/8/8/3QK3 w - - 0 30")   # 1.Qxd8+ Kxd8: the king must recapture (Kf7 loses the queen)
+    game.setup(board)
+    node = game.add_variation(board.parse_san("Qxd8+"))
+    node.add_variation(node.board().parse_san("Kxd8"))
+    engine = chess.engine.SimpleEngine.popen_uci(match.STOCKFISH)
+    try:
+        review.REVIEW_DEPTH, depth = 12, review.REVIEW_DEPTH
+        first, recapture = review.review_pgn(game, engine)
+    finally:
+        review.REVIEW_DEPTH = depth
+        engine.quit()
+    assert not first["recapture"]   # Qxd8+ captures, but not on a square just captured on
+    assert recapture["recapture"] and recapture["cls"] == "Best" and recapture["multipv_gap"] >= 15
 
 # --- annotated PGN and printed lists ------------------------------------------
 

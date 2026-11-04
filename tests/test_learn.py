@@ -97,11 +97,18 @@ def test_prompt_sections():
     assert list(found) == ["M1", "G1", "S1", "D1"]          # gap 4 is not a hard position
     prompt = learn.lessons_prompt(rows, summary, "INTRO\n", found, [lesson("L001")], knowledge.load_rules(knowledge.SEEDS_DIR), {})
     for text in ("=== MISTAKES", "[M1] 2.m3 - Mistake, endgame, lost 12.4 win%", "Your WHY at that move: looked safe",
-                 "[G1] 1.m1 - Great", "[S1] You played 2.m3 (Mistake) from FEN fen3", "Stockfish found 2...m4!!",
+                 "[G1] 1.m1 - Great", "[S1] Stockfish found 2...m4!!", "Your move just before: 2.m3 (Mistake) from FEN fen3",
+                 "Your move before that: 1.m1 (Great) from FEN fen1",
                  "[D1] Moves 20 to 24", "[R01]", "[L001] endgame", "No lessons like \"be careful\""):
         assert text in prompt, text
 
 # --- stats, retirement, promotion, demotion ---------------------------------------------------
+
+def test_recapture_is_not_an_opponent_shot():
+    shot = dict(row(4, "Stockfish", "Great", gap=40), recapture=True)
+    found = learn.items([row(1, "Claude", "Best"), row(2, "Stockfish", "Best"), row(3, "Claude", "Best"), shot],
+                        {"sides": {}, "calibration": {}})
+    assert not any(label.startswith("S") for label in found)
 
 def test_update_stats_counts_citations(folder):
     knowledge.save_lessons(str(folder), [lesson("L001")])
