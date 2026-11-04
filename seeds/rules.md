@@ -1,0 +1,11 @@
+- [R01] After my candidate move, list every enemy check and capture; reject the move if one wins a piece or mates my king. | CHECK: Does any enemy check or capture after my move win a piece or mate my king?
+- [R02] Count attackers and defenders, including x-rays, on each of my pieces and pawns on a line an enemy rook or queen can reach. | CHECK: Is any of my pieces or pawns attacked more times than it is defended?
+- [R03] Before an enemy knight, bishop or rook can hit my queen or rook with tempo, check its retreat square is safe from a second attack. | CHECK: If my queen or rook is attacked next move, does it have a safe retreat square?
+- [R04] Put rooks on open files, not on squares an enemy bishop or pawn can attack with tempo (e.g. d2 or b2 against a dark bishop). | CHECK: Can an enemy bishop or pawn chase my rook with tempo next move?
+- [R05] Before a quiet or regrouping move, look for a move that attacks an enemy piece with tempo, like Nb5 hitting a bishop. | CHECK: Do I have a move that attacks an enemy piece and also improves my position?
+- [R06] Castle by move 10 unless it loses material; after an early queen trade, centralise the king and connect the rooks instead. | CHECK: Is my king still uncastled in the center with queens on after move 10?
+- [R07] Trade pieces only for a concrete gain; keep my active knight if trading it leaves an enemy rook or bishop dominating. | CHECK: After this trade, is the enemy's remaining piece more active than mine?
+- [R08] Never push a pawn to a square the enemy attacks more than I defend, or in a way that gives the enemy a passed pawn. | CHECK: Does this pawn push hang the pawn or give the enemy a passed pawn?
+- [R09] In endgames, keep my king near enemy passed pawns, keep a blocker in front of each passer, and count moves to promotion. | CHECK: Can every enemy passed pawn be stopped in time by my king or a blocker?
+- [R10] When an enemy passed pawn is far advanced, first look for a check or capture that wins it or the piece supporting it. | CHECK: Is there a check or capture that wins the advanced enemy pawn or its defender?
+- [R11] When behind in material, avoid trades and pawn moves near my king; keep my pieces defending each other and aim for a fortress. | CHECK: Does this move trade pieces or loosen the pawns near my king while I am behind?

@@ -1,0 +1,12 @@
+- Before every move, list all enemy checks, captures and threats in the resulting position; if any wins material or mates, pick another move.
+- For each enemy bishop/knight/rook, look at every square it can reach next move: if it would attack a rook or queen with tempo, check my follow-up retreats too; if that retreat runs into a second attack (fork, trapped rook), don't allow it.
+- Don't park rooks on the same colour as the enemy bishop's diagonals (e.g. d2, c1, b2 vs a dark bishop); put rooks on open files where pawns and minor pieces can't chase them.
+- Count attackers vs defenders on every one of my pieces and pawns after the move, including x-rays; never leave a piece undefended on a line (rank/file/diagonal) the enemy rook or queen can reach.
+- Look for every enemy check and ask: after I answer it, which of my pieces is lost (double attack, or a defender pulled away)? If any, prevent the check or protect the piece now.
+- When a move of mine attacks an enemy piece with tempo (like Nb5 hitting a bishop), consider it before any passive or regrouping move.
+- Castle by move 10 unless it loses material; after an early queen trade, centralise the king and connect rooks quickly.
+- Trade pieces only for a concrete plus; don't trade my active knight for an enemy bishop if it leaves their rook or remaining bishop dominating.
+- Never push a pawn to a square the enemy attacks more than I defend it, and never make a pawn push that lets the enemy create a passed pawn (e.g. h4 allowing gxh4).
+- In endgames, keep my king on the side where the enemy passed pawns are, keep a blocker in front of each passer, and count moves to promotion, including checks, before any race.
+- When an enemy passed pawn is far advanced, first look for a check or capture that wins it or the piece supporting it before making a quiet defensive move.
+- When behind in material, avoid trades and pawn moves near my king; keep pieces defending each other and set up a fortress rather than starting pawn races.

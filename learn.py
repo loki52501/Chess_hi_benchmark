@@ -16,8 +16,8 @@ def review_moves(i):
              f"best was {r['best_san']}" for r in bad]
     return evals, worst
 
-def record():   # Claude's results over all finished games in the games folder
-    results = [chess.pgn.read_headers(open(f, encoding="utf-8")).get("Result") for f in glob.glob(f"{match.GAMES_DIR}/game_*.pgn")]
+def record():   # Claude's results over all finished games in the games folder (not the _annotated copies)
+    results = [chess.pgn.read_headers(open(f, encoding="utf-8")).get("Result") for f in glob.glob(f"{match.GAMES_DIR}/game_*.pgn") if re.search(r"game_\d+\.pgn$", f)]
     return f"{results.count('1-0')} wins, {results.count('1/2-1/2')} draws, {results.count('0-1')} losses"
 
 def learn_from_game(i):
@@ -51,7 +51,7 @@ def learn_from_game(i):
         match.log("[!] No <rules> in Claude's answer - keeping the old rules")
     else:
         new_rules = found.group(1).strip()
-        for path in (match.RULES_FILE, f"{match.GAMES_DIR}/rules_after_game_{i}.md"):   # current + history copy
+        for path in (match.games_file("rules.md"), f"{match.GAMES_DIR}/rules_after_game_{i}.md"):   # current + history copy
             with open(path, "w", encoding="utf-8") as f:
                 f.write(new_rules + "\n")
         match.log(f"Rules updated after game {i}:\n{new_rules}")

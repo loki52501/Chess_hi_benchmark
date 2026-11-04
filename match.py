@@ -1,4 +1,5 @@
 import chess, chess.engine, chess.pgn, subprocess, shutil, re, datetime, os, json, time
+import knowledge   # rules.md + lessons.jsonl
 
 STOCKFISH = r"E:\apps\stockfish-windows-x86-64-avx2\stockfish\stockfish-windows-x86-64-avx2.exe"  # change to your stockfish path
 STOCKFISH_SKILL = 10                        # 0 (weakest) .. 20 (strongest)
@@ -8,13 +9,20 @@ CLAUDE_EFFORT = "medium"                    # how hard Claude thinks: low / medi
 CLAUDE_TIMEOUT = 300                        # seconds per answer; slower = attempt fails and Claude is asked again
 TIMED_OUT = "(no answer - timed out)"       # what ask_claude returns when Claude Code took too long
 GAMES_DIR = "games"                         # game_<i>.log (moves), game_<i>.pgn and claude_<i>.log (thinking) go here
-RULES_FILE = f"{GAMES_DIR}/rules.md"        # lessons from earlier games, rewritten by learn.py after every game
+LEARN_MODE = "rules"                        # "lessons": rules.md + lessons.jsonl (learn.py); "rules": one old-style rules.md list
 claude_log = None                           # Claude's thinking for the current game (opened in play_game)
 models_used = set()                         # exact model ids Claude Code reported in this game
 rules = ""                                  # rules Claude follows this game (loaded in play_game)
 
-def load_rules():
-    return open(RULES_FILE, encoding="utf-8").read().strip() if os.path.exists(RULES_FILE) else ""
+def games_file(name):   # paths follow GAMES_DIR at call time, so experiment.py can switch folders
+    return os.path.join(GAMES_DIR, name)
+
+def load_rules():   # the whole rules.md as text
+    path = games_file("rules.md")
+    return open(path, encoding="utf-8").read().strip() if os.path.exists(path) else ""
+
+def init_games_dir():   # a new folder starts from seeds/; an old-style rules.md is migrated in "lessons" mode
+    knowledge.init_folder(GAMES_DIR, LEARN_MODE)
 
 def log(text):   # screen (and GUI) + claude_<i>.log
     print(text)
@@ -24,7 +32,7 @@ def log_file(text):   # claude_<i>.log only - for long things like the full prom
     claude_log.write(text + "\n"); claude_log.flush()
 
 def next_game_number():   # 1 + highest existing game_<i>.log
-    os.makedirs(GAMES_DIR, exist_ok=True)
+    init_games_dir()
     numbers = [int(m.group(1)) for f in os.listdir(GAMES_DIR) if (m := re.fullmatch(r"game_(\d+)\.log", f))]
     return max(numbers, default=0) + 1
 
@@ -35,7 +43,7 @@ def save_pgn(i, board, result="*", termination=None):   # "*" = game still in pr
                         Black=f"Stockfish (skill {STOCKFISH_SKILL})", Result=result)
     if termination:
         game.headers["Termination"] = termination
-    with open(f"{GAMES_DIR}/game_{i}.pgn", "w", encoding="utf-8") as f:
+    with open(games_file(f"game_{i}.pgn"), "w", encoding="utf-8") as f:
         f.write(str(game) + "\n")
 
 def ask_claude(prompt, timeout=None):   # timeout: seconds, default CLAUDE_TIMEOUT
@@ -107,12 +115,12 @@ def play_game(on_move=lambda board: None, i=None):   # on_move is called after e
     engine.configure({"Skill Level": STOCKFISH_SKILL})
     board = chess.Board()
     models_used.clear()
+    init_games_dir()
     rules = load_rules()   # the latest rules, so every new game uses everything learned so far
 
     i = i or next_game_number()
-    os.makedirs(GAMES_DIR, exist_ok=True)
-    claude_log = open(f"{GAMES_DIR}/claude_{i}.log", "w", encoding="utf-8")
-    game_log = open(f"{GAMES_DIR}/game_{i}.log", "w", encoding="utf-8")
+    claude_log = open(games_file(f"claude_{i}.log"), "w", encoding="utf-8")
+    game_log = open(games_file(f"game_{i}.log"), "w", encoding="utf-8")
     header = (f"Game {i} - {datetime.datetime.now():%Y-%m-%d %H:%M} - "
               f"Claude [{CLAUDE_MODEL}] (White) vs Stockfish [skill {STOCKFISH_SKILL}] (Black)")
     game_log.write(header + "\n\n")
