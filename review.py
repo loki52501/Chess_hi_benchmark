@@ -6,7 +6,11 @@ REVIEW_THREADS = 2    # CPU threads for the review engine
 MATE_CP = 10000       # a forced mate counts as +-10000 centipawns
 CLASSES = ["Book", "Great", "Best", "Excellent", "Good", "Inaccuracy", "Mistake", "Miss", "Blunder"]
 GOOD_OR_BETTER = {"Book", "Great", "Best", "Excellent", "Good"}
+WORSE_THAN_GOOD = {"Inaccuracy", "Mistake", "Miss", "Blunder"}
 PHASES = ["opening", "middlegame", "endgame"]
+NAGS = {"Great": chess.pgn.NAG_BRILLIANT_MOVE, "Best": chess.pgn.NAG_GOOD_MOVE, "Inaccuracy": chess.pgn.NAG_DUBIOUS_MOVE,
+        "Mistake": chess.pgn.NAG_MISTAKE, "Miss": chess.pgn.NAG_MISTAKE, "Blunder": chess.pgn.NAG_BLUNDER}   # !! ! ?! ? ? ??
+MARKS = {"Great": "!!", "Mistake": "?", "Miss": "MISS", "Blunder": "??"}   # flagged in the printed move list
 
 # a few main lines; a move in the first 8 plies is "Book" if the game so far is the start of one of these
 BOOK_LINES = [line.split() for line in [
@@ -59,6 +63,14 @@ def evaluate(engine, board):
     infos = engine.analyse(board, chess.engine.Limit(depth=REVIEW_DEPTH), multipv=2)
     return [(info["score"].pov(board.turn).score(mate_score=MATE_CP), info.get("pv", [])) for info in infos]
 
+def move_number(row):   # "23." for White, "23..." for Black
+    return f"{(row['ply'] + 1) // 2}{'.' if row['side'] == 'white' else '...'}"
+
+def label(row):   # "Best", or "Mistake, -12.4%, best was Kd5" for anything worse than Good
+    if row["cls"] in WORSE_THAN_GOOD:
+        return f"{row['cls']}, -{row['loss']:.1f}%, best was {row['best_san']}"
+    return row["cls"]
+
 def pv_san(board, pv, plies=5):
     return board.copy().variation_san(pv[:plies]) if pv else ""
 
@@ -92,8 +104,50 @@ def review_pgn(game, engine, lessons_used=None):
                          fen_before=fen, san=san, best_san=best_san, best_pv_san=best_line,
                          cp_before=cp_best, cp_after=cp_after, win_before=round(win_before, 2),
                          win_after=round(win_after, 2), loss=round(loss, 2), cls=cls, phase=ph,
+                         gap=round(win_before - win_second, 2) if second else None,   # how much worse the 2nd-best move was
                          lessons=lessons_used.get(ply, [])))
     return rows
+
+def write_annotated(game, rows, summary, path):
+    """game_<i>_annotated.pgn: every move gets its class as a comment and a NAG (!!, !, ?!, ?, ??)."""
+    node = game
+    for row in rows:
+        node = node.variations[0]
+        if row["cls"] in NAGS:
+            node.nags.add(NAGS[row["cls"]])
+        node.comment = label(row)
+    w, b = summary["sides"]["white"], summary["sides"]["black"]
+    game.headers["Annotator"] = f"review.py, Stockfish depth {REVIEW_DEPTH}"
+    game.comment = f"Accuracy: White {w['accuracy']}, Black {b['accuracy']}"
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(str(game) + "\n\n")
+
+def print_moves(rows):
+    print("\nClaude's moves:")
+    for r in rows:
+        if r["player"] == "Claude":
+            detail = f"(-{r['loss']:.1f}%, best {r['best_san']})" if r["cls"] in WORSE_THAN_GOOD else ""
+            print(f"{MARKS.get(r['cls'], ''):>5}  {move_number(r) + ' ' + r['san']:14}{r['cls']:12}{detail}")
+
+def print_pairs(rows):
+    before = lambda k: rows[k - 1] if k else None
+    print("\nStockfish's Great moves - what Claude didn't see coming:")
+    greats = [(k, r) for k, r in enumerate(rows) if r["player"] == "Stockfish" and r["cls"] == "Great"]
+    for k, r in greats:
+        prev = before(k)
+        after = f"after Claude's {move_number(prev)} {prev['san']} ({prev['cls']}), " if prev else ""
+        print(f"  {after}Stockfish found {move_number(r)} {r['san']}!! (the next best move was {r['gap']:.1f}% worse)")
+    if not greats:
+        print("  (none)")
+    print("\nClaude's misses - what Claude could have won:")
+    misses = [(k, r) for k, r in enumerate(rows) if r["player"] == "Claude" and r["cls"] == "Miss"]
+    for k, r in misses:
+        prev = before(k)
+        after = f"after Stockfish's {move_number(prev)} {prev['san']} ({prev['cls']}), " if prev else ""
+        print(f"  {after}Claude played {move_number(r)} {r['san']} instead of {r['best_san']} "
+              f"({r['cp_before'] / 100:+.1f} -> {r['cp_after'] / 100:+.1f}); line: {r['best_pv_san']}")
+    if not misses:
+        print("  (none)")
 
 def summarize(rows, game):
     sides = {}
@@ -135,9 +189,12 @@ def review_game(i, games_dir=None, engine=None, lessons_used=None, quiet=False):
         f.writelines(json.dumps(r) + "\n" for r in rows)
     with open(f"{games_dir}/review_{i}.json", "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
+    write_annotated(game, rows, summary, f"{games_dir}/game_{i}_annotated.pgn")
     if not quiet:
         print(f"\nReview of game {i} ({summary['result']}), depth {REVIEW_DEPTH}")
         print_table(summary)
+        print_moves(rows)
+        print_pairs(rows)
     return rows, summary
 
 if __name__ == "__main__":   # python review.py 3 [4 5 ...] [--dir games_full]
