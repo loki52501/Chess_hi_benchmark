@@ -16,6 +16,32 @@ def test_players_and_pgn_follow_claude_color(tmp_path, monkeypatch):
     headers = chess.pgn.read_headers(open(tmp_path / "game_1.pgn"))
     assert headers["White"].startswith("Stockfish") and headers["Black"].startswith("Claude")
 
+@pytest.mark.skipif(not os.path.exists(match.STOCKFISH), reason="Stockfish not found")
+def test_resume_a_game_stopped_halfway(tmp_path, monkeypatch):
+    monkeypatch.setattr(match, "GAMES_DIR", str(tmp_path))
+    monkeypatch.setattr(match, "log", lambda text: match.log_file(text))   # keep the test output quiet
+    calls = {"n": 0, "seen": []}
+    def fake(board):
+        calls["n"] += 1
+        calls["seen"].append(list(match.assessments))
+        if calls["n"] == 4:
+            raise KeyboardInterrupt   # stopped while Claude is thinking about its 4th move
+        match.last_move = dict(retrieved=[], cited=[], self_eval=0.5, trend="same", why=f"move {calls['n']}")
+        return sorted(board.legal_moves, key=str)[0]
+    monkeypatch.setattr(match, "claude_move", fake)
+    with pytest.raises(KeyboardInterrupt):
+        match.play_game(i=1)
+    before = list(chess.pgn.read_game(open(tmp_path / "game_1.pgn")).mainline_moves())
+    assert len(before) == 6 and chess.pgn.read_headers(open(tmp_path / "game_1.pgn"))["Result"] == "*"
+    calls["seen"].clear()
+    match.play_game(i=1, resume=True)
+    after = list(chess.pgn.read_game(open(tmp_path / "game_1.pgn")).mainline_moves())
+    assert after[:6] == before and len(after) > 6                               # went on from the same position
+    assert [a["why"] for a in calls["seen"][0]] == ["move 1", "move 2", "move 3"]   # Claude's own assessments came back
+    plies = [m["ply"] for m in match.knowledge.load_jsonl(str(tmp_path / "moves_1.jsonl"))]
+    assert plies == sorted(set(plies)) and plies[:4] == [1, 3, 5, 7]           # no duplicate or lost move lines
+    assert "resumed after 6 half-moves" in (tmp_path / "game_1.log").read_text()
+
 def test_configs_differ_only_in_what_they_add():
     m = {name: c["match"] for name, c in experiment.CONFIGS.items()}
     assert m["baseline"]["PROTOCOL"] == "basic" and m["baseline"]["LEARN_MODE"] == "rules"

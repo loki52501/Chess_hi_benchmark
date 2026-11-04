@@ -128,7 +128,8 @@ python match.py                     # one game in games/ with the defaults (= th
 python gui.py                       # the same, on a board
 python review.py 3                  # (re-)review game 3: table, per-move list, pairs, calibration
 python review.py 1 --dir games_full # a game in another folder
-python series.py                    # 50 games one after another, learning after each (TOTAL_GAMES at the top)
+python series.py                    # 50 games one after another, learning after each (TOTAL_GAMES at the top);
+                                    # stop with Ctrl+C any time, run it again to continue (games/series_checkpoint.json)
 python parallel.py                  # 50 games, PARALLEL at a time, learning after each as it finishes
 python experiment.py                # all 4 configs, 10 games each, 2 at a time
 python experiment.py full baseline --games 6 --parallel 2
@@ -157,6 +158,8 @@ Settings are module constants at the top of `match.py` (model, effort, `CLAUDE_C
 | `rules_after_game_<i>.md`, `lessons_after_game_<i>.jsonl` | learn.py | history copies |
 | `rules_legacy.md` | migrate.py | backup of the old list |
 | `promotions_declined.json` | learn.py | lesson groups Claude said were not one idea |
+| `series_checkpoint.json` | series.py | first game, total, and per game: result, learned |
+| `stats_counted_games.json` | learn.py | games whose citations are already in the stats (so a re-run doesn't count twice) |
 
 Repo files: `seeds/rules.md`, `seeds/rules_legacy.md`, `endgame_refs.jsonl`; experiment output in `experiments/`.
 

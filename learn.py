@@ -110,7 +110,12 @@ def learn_rules(i, rows, intro):
 # --- "lessons" mode -------------------------------------------------------------------------------
 
 def update_stats(i, rows):
-    """For each rule/lesson Claude cited on a move: retrieved +1, helped +1 if the move was Good or better."""
+    """For each rule/lesson Claude cited on a move: retrieved +1, helped +1 if the move was Good or better.
+    Each game is counted once, even if learning from it runs again (e.g. series.py continuing after Ctrl+C)."""
+    counted_file = match.games_file("stats_counted_games.json")
+    counted = json.load(open(counted_file, encoding="utf-8")) if os.path.exists(counted_file) else []
+    if i in counted:
+        return
     stats, lessons = knowledge.load_stats(folder()), knowledge.load_lessons(folder())
     by_id = {l["id"]: l for l in lessons}
     for r in rows:
@@ -127,6 +132,8 @@ def update_stats(i, rows):
                 entry["cited_games"].append(i)
     knowledge.save_stats(folder(), stats)
     knowledge.save_lessons(folder(), lessons)
+    with open(counted_file, "w", encoding="utf-8") as f:
+        json.dump(counted + [i], f)
 
 def items(rows, summary):
     """The labelled things Claude learns from: M = mistakes, G = good moves, S = opponent shots, D = missed slides."""

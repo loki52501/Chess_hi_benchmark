@@ -162,57 +162,84 @@ def claude_move(board, tries=3):
             prompt += f"\n\nYour answer '{move}' was not in the legal moves list. Try again."
     return None  # gave up after all tries
 
-def play_game(on_move=lambda board: None, i=None):   # on_move is called after every move (used by the GUI)
-    global claude_log, rules, rule_list, lessons, last_move   # i = game number (parallel.py picks it; else next free one)
+def unfinished_moves(i):   # the moves of game i if its PGN says it is still in progress ("*"), else []
+    path = games_file(f"game_{i}.pgn")
+    if not os.path.exists(path):
+        return []
+    game = chess.pgn.read_game(open(path, encoding="utf-8"))
+    return list(game.mainline_moves()) if game and game.headers.get("Result") == "*" else []
+
+def restore(i, moves):
+    """Resuming game i: keep the moves_<i>.jsonl lines for moves that are in the PGN, and rebuild Claude's own assessments."""
+    kept = [m for m in knowledge.load_jsonl(games_file(f"moves_{i}.jsonl")) if m["ply"] <= len(moves)]
+    with open(games_file(f"moves_{i}.jsonl"), "w", encoding="utf-8") as f:
+        f.writelines(json.dumps(m) + "\n" for m in kept)
+    assessments.extend(dict(move_number=m["move_number"], self_eval=m.get("self_eval"), trend=m.get("trend"), why=m.get("why"))
+                       for m in kept)
+
+def play_game(on_move=lambda board: None, i=None, resume=False):   # on_move is called after every move (used by the GUI)
+    """Play game i (default: the next free number). resume=True continues game i from its PGN if it was stopped halfway."""
+    global claude_log, rules, rule_list, lessons, last_move
     engine = chess.engine.SimpleEngine.popen_uci(STOCKFISH)
     engine.configure({"Skill Level": STOCKFISH_SKILL})
-    board = chess.Board()
-    models_used.clear()
-    assessments.clear()
-    init_games_dir()
-    rules = load_rules()   # the latest rules and lessons, so every new game uses everything learned so far
-    rule_list, lessons = knowledge.load_rules(GAMES_DIR), knowledge.load_lessons(GAMES_DIR)
+    files = []   # closed in finally, also when the game is stopped with Ctrl+C
+    try:
+        board = chess.Board()
+        models_used.clear()
+        assessments.clear()
+        init_games_dir()
+        rules = load_rules()   # the latest rules and lessons, so every new game uses everything learned so far
+        rule_list, lessons = knowledge.load_rules(GAMES_DIR), knowledge.load_lessons(GAMES_DIR)
 
-    i = i or next_game_number()
-    claude_log = open(games_file(f"claude_{i}.log"), "w", encoding="utf-8")
-    game_log = open(games_file(f"game_{i}.log"), "w", encoding="utf-8")
-    moves_log = open(games_file(f"moves_{i}.jsonl"), "w", encoding="utf-8")   # per Claude move: ids, EVAL, cost (for review.py)
-    header = (f"Game {i} - {datetime.datetime.now():%Y-%m-%d %H:%M} - "
-              f"{players()}")
-    game_log.write(header + "\n\n")
-    log(f"===== {header} =====")
+        i = i or next_game_number()
+        earlier = unfinished_moves(i) if resume else []
+        mode = "a" if earlier else "w"   # a resumed game adds to its logs
+        claude_log = open(games_file(f"claude_{i}.log"), mode, encoding="utf-8")
+        game_log = open(games_file(f"game_{i}.log"), mode, encoding="utf-8")
+        if earlier:
+            restore(i, earlier)
+            for move in earlier:
+                board.push(move)
+        moves_log = open(games_file(f"moves_{i}.jsonl"), mode, encoding="utf-8")   # per Claude move: ids, EVAL, cost (for review.py)
+        files += [claude_log, game_log, moves_log]
+        header = (f"Game {i} - {datetime.datetime.now():%Y-%m-%d %H:%M} - "
+                  f"{players()}" + (f" - resumed after {len(earlier)} half-moves" if earlier else ""))
+        game_log.write(header + "\n\n")
+        log(f"===== {header} =====")
 
-    result, reason = None, None
-    while not board.is_game_over():
-        if board.turn == CLAUDE_COLOR:
-            last_move = {}
-            player, move = "Claude", claude_move(board)
-            if move is None: result, reason = "0-1" if CLAUDE_COLOR == chess.WHITE else "1-0", "Claude forfeits: no legal move"; break
-        else:
-            player, move = "Stockfish", engine.play(board, chess.engine.Limit(time=0.1)).move
-        san = board.san(move)
-        log(f">> {player} plays {san}")
-        if player == "Claude":
-            moves_log.write(json.dumps(dict(ply=len(board.move_stack) + 1, move_number=board.fullmove_number, san=san,
-                                            **last_move)) + "\n")
-            moves_log.flush()
-        game_log.write(f"{board.fullmove_number}.{'' if board.turn == chess.WHITE else '..'} {san}  ({player})\n")
-        game_log.flush()   # saved after every move, even if the game is stopped halfway
-        board.push(move)
-        save_pgn(i, board)
-        on_move(board)
+        result, reason = None, None
+        while not board.is_game_over():
+            if board.turn == CLAUDE_COLOR:
+                last_move = {}
+                player, move = "Claude", claude_move(board)
+                if move is None: result, reason = "0-1" if CLAUDE_COLOR == chess.WHITE else "1-0", "Claude forfeits: no legal move"; break
+            else:
+                player, move = "Stockfish", engine.play(board, chess.engine.Limit(time=0.1)).move
+            san = board.san(move)
+            log(f">> {player} plays {san}")
+            if player == "Claude":
+                moves_log.write(json.dumps(dict(ply=len(board.move_stack) + 1, move_number=board.fullmove_number, san=san,
+                                                **last_move)) + "\n")
+                moves_log.flush()
+            game_log.write(f"{board.fullmove_number}.{'' if board.turn == chess.WHITE else '..'} {san}  ({player})\n")
+            game_log.flush()   # saved after every move, even if the game is stopped halfway
+            board.push(move)
+            save_pgn(i, board)
+            on_move(board)
 
-    result = result or board.result()
-    save_pgn(i, board, result, reason)
-    summary = (f"\nResult: {result}{f' ({reason})' if reason else ''}\n"
-               f"Claude model: {', '.join(sorted(models_used)) or CLAUDE_MODEL}\n"
-               f"Stockfish skill: {STOCKFISH_SKILL}\n\n"
-               f"{board}\n\nPGN: {chess.Board().variation_san(board.move_stack)}")
-    log(summary)
-    game_log.write(summary + "\n")
-    game_log.close(); claude_log.close(); moves_log.close()
-    engine.quit()
-    return result
+        result = result or board.result()
+        save_pgn(i, board, result, reason)
+        summary = (f"\nResult: {result}{f' ({reason})' if reason else ''}\n"
+                   f"Claude model: {', '.join(sorted(models_used)) or CLAUDE_MODEL}\n"
+                   f"Stockfish skill: {STOCKFISH_SKILL}\n\n"
+                   f"{board}\n\nPGN: {chess.Board().variation_san(board.move_stack)}")
+        log(summary)
+        game_log.write(summary + "\n")
+        return result
+    finally:   # Stockfish and the log files are closed even when the game is interrupted
+        engine.quit()
+        for f in files:
+            f.close()
 
 if __name__ == "__main__":   # only runs with "python match.py", not when gui.py imports this file
     import learn

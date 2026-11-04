@@ -106,6 +106,13 @@ def test_update_stats_counts_citations(folder):
     assert stats["R02"]["retrieved"] == 0                    # Stockfish rows don't count
     assert lessons[0]["retrieved"] == 1 and lessons[0]["helped"] == 1
 
+def test_update_stats_counts_each_game_once(folder):
+    rows = [row(1, "Claude", "Best", cited=["R01"])]
+    learn.update_stats(4, rows)
+    learn.update_stats(4, rows)   # learning from game 4 again (e.g. series.py continuing)
+    learn.update_stats(5, rows)
+    assert knowledge.load_stats(str(folder))["R01"]["retrieved"] == 2
+
 def test_retire_below_baseline(folder):
     knowledge.save_lessons(str(folder), [lesson("L001", retrieved=10, helped=3), lesson("L002", retrieved=10, helped=9),
                                          lesson("L003", retrieved=4, helped=0)])
