@@ -56,9 +56,11 @@ def next_rule_id(rules, stats):   # never reuses an id, even of a rule that was 
 
 # --- layer 2: specific lessons -----------------------------------------------------------------
 
-def load_lessons(folder):
-    p = path(folder, "lessons.jsonl")
+def load_jsonl(p):   # one JSON object per line; [] if the file doesn't exist
     return [json.loads(line) for line in open(p, encoding="utf-8") if line.strip()] if os.path.exists(p) else []
+
+def load_lessons(folder):
+    return load_jsonl(path(folder, "lessons.jsonl"))
 
 def save_lessons(folder, lessons):
     with open(path(folder, "lessons.jsonl"), "w", encoding="utf-8") as f:

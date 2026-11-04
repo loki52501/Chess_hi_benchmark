@@ -1,4 +1,4 @@
-import chess, chess.engine, chess.pgn, json, math, sys
+import chess, chess.engine, chess.pgn, json, math, os, sys
 import match   # Stockfish path and games folder
 
 REVIEW_DEPTH = 18     # how deep full-strength Stockfish checks every position
@@ -78,9 +78,12 @@ def players(game):   # {chess.WHITE: "Claude", chess.BLACK: "Stockfish"} from th
     return {color: "Claude" if game.headers.get(side, "").startswith("Claude") else "Stockfish"
             for color, side in ((chess.WHITE, "White"), (chess.BLACK, "Black"))}
 
-def review_pgn(game, engine, lessons_used=None):
-    """One dict per move (both sides). Each position is analysed once: the position after move n is the one before n+1."""
-    lessons_used = lessons_used or {}   # ply -> lesson ids Claude saw for that move (from match.py)
+CLAUDE_FIELDS = ("self_eval", "trend", "why", "retrieved", "cited")   # copied from moves_<i>.jsonl onto Claude's moves
+
+def review_pgn(game, engine, claude_moves=None):
+    """One dict per move (both sides). Each position is analysed once: the position after move n is the one before n+1.
+    claude_moves: ply -> what match.py recorded for Claude's move (its own EVAL/TREND/WHY, lesson ids)."""
+    claude_moves = claude_moves or {}
     who = players(game)
     board, moves, sans = game.board(), list(game.mainline_moves()), []
     lines = evaluate(engine, board)
@@ -100,13 +103,20 @@ def review_pgn(game, engine, lessons_used=None):
         loss = 0.0 if played_best else max(0.0, win_before - win_after)
         win_second = win_pct(second[0]) if second else None
         cls = classify(loss, played_best, cp_best, cp_after, win_before, win_second, is_book(sans))
-        rows.append(dict(ply=ply, side="white" if mover == chess.WHITE else "black", player=who[mover],
-                         fen_before=fen, san=san, best_san=best_san, best_pv_san=best_line,
-                         cp_before=cp_best, cp_after=cp_after, win_before=round(win_before, 2),
-                         win_after=round(win_after, 2), loss=round(loss, 2), cls=cls, phase=ph,
-                         multipv_gap=round(win_before - win_second, 2) if second else None,   # how much worse the 2nd-best move was
-                         lessons=lessons_used.get(ply, [])))
+        row = dict(ply=ply, side="white" if mover == chess.WHITE else "black", player=who[mover],
+                   fen_before=fen, san=san, best_san=best_san, best_pv_san=best_line,
+                   cp_before=cp_best, cp_after=cp_after, win_before=round(win_before, 2),
+                   win_after=round(win_after, 2), loss=round(loss, 2), cls=cls, phase=ph,
+                   multipv_gap=round(win_before - win_second, 2) if second else None)   # how much worse the 2nd-best move was
+        if row["player"] == "Claude":
+            recorded = claude_moves.get(ply, {})
+            row.update({k: recorded.get(k, [] if k in ("retrieved", "cited") else None) for k in CLAUDE_FIELDS})
+        rows.append(row)
     return rows
+
+def load_claude_moves(games_dir, i):   # ply -> the line match.py wrote for that Claude move
+    p = f"{games_dir}/moves_{i}.jsonl"
+    return {m["ply"]: m for m in (json.loads(l) for l in open(p, encoding="utf-8") if l.strip())} if os.path.exists(p) else {}
 
 def write_annotated(game, rows, summary, path):
     """game_<i>_annotated.pgn: every move gets its class as a comment and a NAG (!!, !, ?!, ?, ??)."""
@@ -171,7 +181,7 @@ def print_table(summary):
         fmt = lambda s: f"{s['accuracy_by_phase'][p]:.1f} ({s['moves_by_phase'][p]})" if s['accuracy_by_phase'][p] is not None else "-"
         print(f"{'acc ' + p:16}{fmt(w):>20}{fmt(b):>20}")
 
-def review_game(i, games_dir=None, engine=None, lessons_used=None, quiet=False):
+def review_game(i, games_dir=None, engine=None, quiet=False):
     """Review game i, write review_<i>.jsonl + review_<i>.json, return (rows, summary)."""
     games_dir = games_dir or match.GAMES_DIR
     own_engine = engine is None
@@ -180,7 +190,7 @@ def review_game(i, games_dir=None, engine=None, lessons_used=None, quiet=False):
         engine.configure({"Threads": REVIEW_THREADS, "Hash": 64})
     game = chess.pgn.read_game(open(f"{games_dir}/game_{i}.pgn", encoding="utf-8"))
     try:
-        rows = review_pgn(game, engine, lessons_used)
+        rows = review_pgn(game, engine, load_claude_moves(games_dir, i))
     finally:
         if own_engine:
             engine.quit()
