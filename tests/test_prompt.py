@@ -152,3 +152,14 @@ def test_closest_refs():
     assert names[0] in ("Opposition", "Rule of the square")
     rook = [r["name"] for r in features.closest_refs(chess.Board("8/3k4/8/3P4/3K4/8/r7/7R w - - 0 50"), refs)]
     assert rook[0] in ("Lucena position", "Philidor defence")
+
+def test_log_survives_characters_the_console_cannot_show(tmp_path, monkeypatch):
+    import io
+    out = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")   # like Windows when the output goes to a file
+    monkeypatch.setattr(sys, "stdout", out)
+    monkeypatch.setattr(match, "claude_log", open(tmp_path / "c.log", "w", encoding="utf-8"))
+    match.log("PLAN: Qxf7+ → mate, ½ point")
+    match.claude_log.close()
+    assert (tmp_path / "c.log").read_text(encoding="utf-8") == "PLAN: Qxf7+ → mate, ½ point\n"   # full text in the file
+    out.flush()
+    assert out.buffer.getvalue().decode("cp1252").startswith("PLAN: Qxf7+ ? mate")              # replaced on screen

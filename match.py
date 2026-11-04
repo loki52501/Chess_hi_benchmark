@@ -1,4 +1,4 @@
-import chess, chess.engine, chess.pgn, subprocess, shutil, re, datetime, os, json, time
+import chess, chess.engine, chess.pgn, subprocess, shutil, re, datetime, os, json, sys, time
 import knowledge, features, prompts   # rules.md + lessons.jsonl, what is on the board, the move prompts
 
 STOCKFISH = r"E:\apps\stockfish-windows-x86-64-avx2\stockfish\stockfish-windows-x86-64-avx2.exe"  # change to your stockfish path
@@ -39,9 +39,13 @@ def load_rules():   # the whole rules.md as text
 def init_games_dir():   # a new folder starts from seeds/; an old-style rules.md is migrated in "lessons" mode
     knowledge.init_folder(GAMES_DIR, LEARN_MODE)
 
-def log(text):   # screen (and GUI) + claude_<i>.log
-    print(text)
-    log_file(text)
+def log(text):   # claude_<i>.log + screen (and GUI)
+    log_file(text)   # the file first, so nothing is lost even if the screen can't show the text
+    try:
+        print(text)
+    except UnicodeEncodeError:   # e.g. Claude wrote "→" and the output goes to a file in Windows' cp1252
+        encoding = getattr(sys.stdout, "encoding", None) or "ascii"
+        print(text.encode(encoding, errors="replace").decode(encoding))
 
 def log_file(text):   # claude_<i>.log only - for long things like the full prompt
     if claude_log is None or claude_log.closed:   # nothing open (e.g. building a prompt in a test)
