@@ -1,5 +1,5 @@
 import chess, chess.pgn, glob, json, os, re
-import match, review, knowledge   # games folder + Claude, the post-game review, rules.md / lessons.jsonl
+import match, review, knowledge, features   # games folder + Claude, the review, rules.md / lessons.jsonl, position tags
 
 MAX_RULES = 12          # "rules" mode: keep the one old-style list short
 LEARN_TIMEOUT = 600     # reviewing a whole game takes longer than one move
@@ -15,14 +15,21 @@ MISTAKE_CLASSES = ("Inaccuracy", "Mistake", "Blunder", "Miss")
 KIND_OF = {"M": "mistake", "G": "good_move", "S": "opponent_shot", "D": "self_assessment"}
 
 GOOD_LESSON = """Each lesson must have:
-- rule: one sentence, 25 words or fewer, naming specific pieces, pawns, squares or the king.
-- trigger: what on the board makes this lesson apply, checkable from the FEN alone.
+- rule: one sentence, 25 words or fewer, naming pieces, pawns, files or the king.
+- trigger: what on the board makes this lesson apply, checkable from the position.
+- rule and trigger describe the PATTERN, not the exact squares, so the lesson fires in other games too. Use relative
+  terms: my king / my castled side / the enemy's half-open file toward my king / an enemy piece on my 2nd or 3rd rank /
+  a knight that can fork two of my major pieces / my rook on the long diagonal of an enemy bishop / my 7th rank.
+  Exact squares (b1, Qc3, a1-h8) belong in "source" only; a rule may name squares once, after "e.g.". The trigger names none.
 - check: one yes/no question I can answer before moving; it must point to a specific action if the answer is wrong.
+- features: 1 to 4 tags from the TAG LIST that are true in the source position (each item lists "Tags true here").
+  They decide when the lesson is shown, so pick the tags that make the pattern, not incidental ones.
 - phase and motifs from the allowed list.
 - Don't add a lesson that says the same thing as an existing one; reword the existing one instead and give its id.
 - No lessons like "be careful", "calculate more", "think harder", "play better".
-At most 3 new lessons per game. Prefer fixing or merging existing lessons over adding new ones.
-Bad: "Be careful in endgames."  Good: "When the enemy has a passed pawn on the 6th, put a piece on its promotion square before making any other plan move." """
+Prefer fixing or merging existing lessons over adding new ones.
+Bad: "With my king on b1 and a bishop on b4, play Bd4."
+Good: "When my king is castled queenside and enemy pieces line up on the files in front of it, add a defender to my 2nd rank before attacking." """
 
 def folder():
     return match.GAMES_DIR
@@ -50,6 +57,16 @@ def good_rate():   # Claude's share of Good-or-better moves over every reviewed 
 
 move_number = review.move_number
 
+def boards(game):   # ply -> the board before that move, with the move history (some tags look at recent moves)
+    board, found = game.board(), {}
+    for ply, move in enumerate(game.mainline_moves(), 1):
+        found[ply] = board.copy()
+        board.push(move)
+    return found
+
+def tags_at(board_before, color):
+    return features.tags(board_before, color) if board_before is not None else []
+
 def learn_from_game(i):
     match.claude_log = open(match.games_file(f"learn_{i}.log"), "w", encoding="utf-8")   # requests + answers go here
     game = chess.pgn.read_game(open(match.games_file(f"game_{i}.pgn"), encoding="utf-8"))
@@ -67,7 +84,7 @@ def learn_from_game(i):
             learn_rules(i, rows, intro)
         else:
             update_stats(i, rows)
-            learn_lessons(i, rows, summary, intro)
+            learn_lessons(i, rows, summary, intro, boards(game), claude_color(game))
             baseline = good_rate()
             retire_lessons(baseline)
             promote(i)
@@ -135,8 +152,10 @@ def update_stats(i, rows):
     with open(counted_file, "w", encoding="utf-8") as f:
         json.dump(counted + [i], f)
 
-def items(rows, summary):
-    """The labelled things Claude learns from: M = mistakes, G = good moves, S = opponent shots, D = missed slides."""
+def items(rows, summary, positions=None, color=chess.WHITE):
+    """The labelled things Claude learns from: M = mistakes, G = good moves, S = opponent shots, D = missed slides.
+    positions: ply -> board before the move (from boards()), used to list the tags true at each item."""
+    by_fen = {b.fen(): b for b in (positions or {}).values()}
     mine = [r for r in rows if r["player"] == "Claude"]
     found = {}
     for n, r in enumerate(sorted((r for r in mine if r["cls"] in MISTAKE_CLASSES), key=lambda r: -r["loss"])[:MAX_MISTAKES], 1):
@@ -165,6 +184,10 @@ def items(rows, summary):
             f"     FEN at the start: {slide['fen_start']}\n     FEN at the end: {slide['fen_end']}\n"
             f"     Engine's best line at the start: {slide['best_pv_start']}\n"
             f"     Your WHY lines: " + " | ".join(w or "(none)" for w in slide["whys"])))
+    for item in found.values():   # the tags a lesson from this item may use: the ones true at its source position
+        fen = item["row"]["fen_before"] if item.get("row") else item["slide"]["fen_start"]
+        item["tags"] = tags_at(by_fen.get(fen), color)
+        item["text"] += "\n     Tags true here: " + (", ".join(item["tags"]) or "(none)")
     return found
 
 def source_of(item, i):
@@ -188,7 +211,8 @@ def lessons_prompt(rows, summary, intro, found, lessons, rules, stats):
     rule_lines = "\n".join(f"[{r['id']}] {r['rule']} | CHECK: {r['check']}  (cited {stats.get(r['id'], {}).get('retrieved', 0)}, "
                            f"helped {rate(stats.get(r['id'], {}))})" for r in rules) or "(none)"
     lesson_lines = "\n".join(f"[{l['id']}] {l['phase']} | {', '.join(l['motifs'])} | cited {l['retrieved']}, helped {rate(l)}\n"
-                             f"     rule: {l['rule']}\n     trigger: {l['trigger']}\n     check: {l['check']}"
+                             f"     rule: {l['rule']}\n     trigger: {l['trigger']}\n     check: {l['check']}\n"
+                             f"     features: {', '.join(l.get('features') or []) or '(none)'}"
                              for l in lessons if l["status"] == "active" and l["phase"] in phases) or "(none yet)"
     return (intro +
             "=== ACCURACY ===\n"
@@ -207,14 +231,25 @@ def lessons_prompt(rows, summary, intro, found, lessons, rules, stats):
             "2. Update your lessons.\n" + GOOD_LESSON + "\n"
             f"phase: one of {', '.join(knowledge.PHASES)}. motifs: from {', '.join(knowledge.MOTIFS)}.\n"
             "Lessons from a MISSED SLIDE use the motif self_assessment or prophylaxis.\n"
-            "Every new lesson names the item it comes from in \"source\" (e.g. \"M2\", \"G1\", \"S1\", \"D1\").\n"
-            "\"update\" and \"retire\" take lesson ids (L...) only; general rules (R...) change only by promotion.\n"
-            "Reply with JSON between <lessons> and </lessons>, exactly like this:\n"
+            "Every new lesson names the item it comes from in \"source\" (e.g. \"M2\", \"G1\", \"S1\", \"D1\"); its features "
+            "must be among that item's \"Tags true here\".\n"
+            "\"update\" and \"retire\" take lesson ids (L...) only; general rules (R...) change only by promotion.\n\n"
+            f"=== TAG LIST (for \"features\") ===\n{features.tag_list()}\n\n"
+            "Reply with JSON between <lessons> and </lessons>, in this shape (Lxxx stands for a real lesson id from above):\n"
             "<lessons>\n"
-            '{"add": [{"rule": "...", "trigger": "...", "check": "...", "phase": "endgame", "motifs": ["king_activity"], "source": "M2"}],\n'
-            ' "update": [{"id": "L003", "check": "..."}],\n'
-            ' "retire": ["L007"]}\n'
+            '{"add": [{"rule": "...", "trigger": "...", "check": "...", "phase": "middlegame", "motifs": ["king_safety"],\n'
+            '          "features": ["king_castled_queenside", "my_king_attacked"], "source": "M1"}],\n'
+            ' "update": [{"id": "Lxxx", "check": "..."}],\n'
+            ' "retire": []}\n'
             "</lessons>")
+
+def tag_problems(tags, allowed=None):   # unknown tags, or (for a new lesson) tags not true at its source position
+    unknown = [t for t in tags or [] if t not in features.TAGS]
+    if unknown:
+        return [f"unknown feature tags {unknown}; use names from the TAG LIST"]
+    if allowed is not None and set(tags) - set(allowed):
+        return [f"features {sorted(set(tags) - set(allowed))} are not true at the source position (true there: {', '.join(allowed) or 'none'})"]
+    return []
 
 def parse_changes(reply, lessons, found):
     """(changes, problems): changes keeps only valid entries, problems says what was wrong."""
@@ -235,8 +270,11 @@ def parse_changes(reply, lessons, found):
         bad = knowledge.problems_with(entry)
         if entry.get("source") not in found:
             bad.append(f"source {entry.get('source')!r} is not one of {', '.join(found) or '(no items)'}")
-        elif entry["source"].startswith("D") and not {"self_assessment", "prophylaxis"} & set(entry.get("motifs") or []):
-            bad.append("a lesson from a missed slide needs the motif self_assessment or prophylaxis")
+        else:
+            if entry["source"].startswith("D") and not {"self_assessment", "prophylaxis"} & set(entry.get("motifs") or []):
+                bad.append("a lesson from a missed slide needs the motif self_assessment or prophylaxis")
+            if isinstance(entry.get("features"), list):
+                bad += tag_problems(entry["features"], found[entry["source"]].get("tags", []))
         problems += [f"add {str(entry.get('rule', ''))[:60]!r}: {p}" for p in bad]
         if not bad:
             changes["add"].append(entry)
@@ -246,6 +284,8 @@ def parse_changes(reply, lessons, found):
             continue
         fields = [f for f in knowledge.LESSON_FIELDS if f in entry]
         bad = knowledge.problems_with(entry, fields=fields)
+        if isinstance(entry.get("features"), list):
+            bad += tag_problems(entry["features"])
         problems += [f"update {entry['id']}: {p}" for p in bad]
         if not bad and fields:
             changes["update"].append({f: entry[f] for f in ["id"] + fields})
@@ -261,14 +301,14 @@ def apply_changes(lessons, changes, found, i):
     for entry in changes["add"][:MAX_NEW_LESSONS]:
         label = entry["source"]
         lessons.append(dict(id=knowledge.next_lesson_id(lessons), rule=entry["rule"], trigger=entry["trigger"],
-                            check=entry["check"], phase=entry["phase"], motifs=entry["motifs"],
+                            check=entry["check"], phase=entry["phase"], motifs=entry["motifs"], features=entry["features"],
                             source=source_of(found[label], i), kind=KIND_OF[label[0]], created_game=i,
                             retrieved=0, helped=0, status="active"))
     return lessons
 
-def learn_lessons(i, rows, summary, intro):
+def learn_lessons(i, rows, summary, intro, positions=None, color=chess.WHITE):
     lessons, rules, stats = knowledge.load_lessons(folder()), knowledge.load_rules(folder()), knowledge.load_stats(folder())
-    found = items(rows, summary)
+    found = items(rows, summary, positions, color)
     prompt = lessons_prompt(rows, summary, intro, found, lessons, rules, stats)
     reply = match.ask_claude(prompt, timeout=LEARN_TIMEOUT)
     match.log_file(reply)
@@ -389,15 +429,19 @@ def demote(i, baseline):
         f"was cited in {len(stats[rule['id']]['cited_games'])} games, but only {rate:.0%} of those moves were Good or better "
         f"(your average is {baseline:.0%}). It will stop being shown before every move.\n"
         "Should it become a specific lesson that is only shown when it fits the position? If yes, write the trigger: "
-        "what on the board makes it apply, checkable from the FEN alone, plus its phase and motifs.\n"
+        "what on the board makes it apply (a pattern, no exact squares), its phase, motifs, and 1 to 4 feature tags.\n"
         f"phase: one of {', '.join(knowledge.PHASES)}. motifs: from {', '.join(knowledge.MOTIFS)}.\n"
+        f"Feature tags:\n{features.tag_list()}\n"
         "Reply with JSON between <demotion> and </demotion>, e.g.\n"
-        '<demotion>{"keep_as_lesson": true, "trigger": "...", "phase": "middlegame", "motifs": ["pin"]}</demotion>   or   '
-        '<demotion>{"keep_as_lesson": false}</demotion>'))
+        '<demotion>{"keep_as_lesson": true, "trigger": "...", "phase": "middlegame", "motifs": ["pin"], '
+        '"features": ["my_piece_pinned"]}</demotion>   or   <demotion>{"keep_as_lesson": false}</demotion>'))
     rules = [r for r in rules if r["id"] != rule["id"]]
     stats[rule["id"]]["demoted_game"] = i
-    lesson = dict(rule=rule["rule"], check=rule["check"], **{k: (answer or {}).get(k) for k in ("trigger", "phase", "motifs")})
-    if answer and answer.get("keep_as_lesson") and not knowledge.problems_with(lesson):
+    lesson = dict(rule=rule["rule"], check=rule["check"],
+                  **{k: (answer or {}).get(k) for k in ("trigger", "phase", "motifs", "features")})
+    usable = (answer and answer.get("keep_as_lesson") and not tag_problems(lesson["features"] or ["?"])
+              and not knowledge.problems_with(lesson, fields=("trigger", "phase", "motifs", "features")))
+    if usable:
         lessons.append(dict(id=knowledge.next_lesson_id(lessons), **lesson, source=dict(game=i, demoted_from=rule["id"]),
                             kind="demoted_rule", created_game=i, retrieved=0, helped=0, status="active"))
         match.log(f"DEMOTED {rule['id']} (help rate {rate:.0%}) -> lesson {lessons[-1]['id']}, when: {lesson['trigger']}")

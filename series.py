@@ -31,27 +31,32 @@ def summary(state):
     results = collections.Counter(match.outcome(g["result"]) for g in state["games"].values() if "result" in g)
     return f"{results['win']} wins, {results['draw']} draws, {results['loss']} losses"
 
-state = load_or_start()
-try:
-    for n, i in enumerate(range(state["first"], state["first"] + state["total"]), 1):
-        game = state["games"].setdefault(str(i), {})
-        if game.get("learned"):
-            continue
-        start = time.time()
-        if "result" not in game:
-            game["result"] = match.play_game(i=i, resume=True)   # continues the game if it was stopped halfway
+def main():
+    state = load_or_start()
+    i = state["first"]
+    try:
+        for n, i in enumerate(range(state["first"], state["first"] + state["total"]), 1):
+            game = state["games"].setdefault(str(i), {})
+            if game.get("learned"):
+                continue
+            start = time.time()
+            if "result" not in game:
+                game["result"] = match.play_game(i=i, resume=True)   # continues the game if it was stopped halfway
+                save(state)
+            learn.learn_from_game(i)
+            game["learned"] = True
             save(state)
-        learn.learn_from_game(i)
-        game["learned"] = True
-        save(state)
-        print(f"\n##### [{n}/{state['total']}] game {i}: {game['result']} ({(time.time() - start) / 60:.1f} min) - "
-              f"so far: {summary(state)} #####\n")
-except KeyboardInterrupt:
-    print(f"\nStopped. Run python series.py again to continue from game {i}.")
-    raise SystemExit(1)
+            print(f"\n##### [{n}/{state['total']}] game {i}: {game['result']} ({(time.time() - start) / 60:.1f} min) - "
+                  f"so far: {summary(state)} #####\n")
+    except KeyboardInterrupt:
+        print(f"\nStopped. Run python series.py again to continue from game {i}.")
+        raise SystemExit(1)
 
-last = state["first"] + state["total"] - 1
-text = f"{match.players()}, games {state['first']}..{last}, played in sequence with learning\nClaude: {summary(state)}\n"
-print(text)
-with open(match.games_file(f"summary_{state['first']}-{last}.txt"), "w", encoding="utf-8") as f:
-    f.write(text)
+    last = state["first"] + state["total"] - 1
+    text = f"{match.players()}, games {state['first']}..{last}, played in sequence with learning\nClaude: {summary(state)}\n"
+    print(text)
+    with open(match.games_file(f"summary_{state['first']}-{last}.txt"), "w", encoding="utf-8") as f:
+        f.write(text)
+
+if __name__ == "__main__":   # importing series.py (e.g. from a test) must not start a series
+    main()

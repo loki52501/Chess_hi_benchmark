@@ -4,7 +4,7 @@ import knowledge
 
 GOOD = dict(rule="When the enemy has a passed pawn on the 6th, put a piece on its promotion square first.",
             trigger="enemy passed pawn on my 3rd rank", check="Is a piece of mine on the promotion square? If not, put one there.",
-            phase="endgame", motifs=["passed_pawn"])
+            phase="endgame", motifs=["passed_pawn"], features=["enemy_passer_6th"])
 
 def test_seed_rules_follow_the_format():
     rules = knowledge.load_rules(knowledge.SEEDS_DIR)
@@ -30,6 +30,16 @@ def test_lesson_problems():
     assert any("phase" in p for p in knowledge.problems_with(dict(GOOD, phase="late")))
     long_rule = "Move the king toward the pawns " + "and then keep it there " * 5 + "near the e4 pawn."
     assert any("words" in p for p in knowledge.problems_with(dict(GOOD, rule=long_rule)))
+
+def test_pattern_not_squares():
+    square_rule = dict(GOOD, rule="With my king on b1 and an enemy bishop on b4, play Bd4 to guard the pawns.")
+    assert any("exact squares (b1, b4, d4)" in p for p in knowledge.problems_with(square_rule))
+    example_rule = dict(GOOD, rule="Never leave my queen and a rook forkable by one enemy knight, e.g. Qc3 and Re3 from d5.")
+    assert knowledge.problems_with(example_rule) == []
+    assert any("e.g." in p for p in knowledge.problems_with(dict(GOOD, rule="Attack the pinned knight, e.g. Bg5, e.g. h4.")))
+    assert any("trigger names exact squares (a1, h8)" in p for p in knowledge.problems_with(dict(GOOD, trigger="my queen on the a1-h8 diagonal")))
+    assert knowledge.problems_with(dict(GOOD, trigger="my queen on the long diagonal pins a knight to its rook")) == []
+    assert "missing features" in knowledge.problems_with(dict(GOOD, features=[]))
 
 def test_partial_update_checks_only_given_fields():
     assert knowledge.problems_with({"check": "Is my rook behind the pawn?"}, fields=["check"]) == []

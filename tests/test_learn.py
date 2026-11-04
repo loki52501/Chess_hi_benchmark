@@ -27,8 +27,8 @@ def answer(tag, data):
 
 NEW = dict(rule="In rook endgames bring the king toward the pawns before chasing checks with the rook.",
            trigger="rook endgame, my king 3+ squares from my pawns", check="Is my king closer to the pawns than the enemy king?",
-           phase="endgame", motifs=["king_activity", "rook_activity"], source="M1")
-FOUND = {"M1": dict(row=row(3, "Claude", "Mistake", loss=12.4), text="[M1] ...")}
+           phase="endgame", motifs=["king_activity", "rook_activity"], features=["rook_endgame"], source="M1")
+FOUND = {"M1": dict(row=row(3, "Claude", "Mistake", loss=12.4), text="[M1] ...", tags=["rook_endgame", "my_passed_pawn"])}
 
 # --- parsing Claude's lessons answer -----------------------------------------------------------
 
@@ -44,13 +44,17 @@ def test_parse_valid_add_update_retire():
     (dict(NEW, motifs=["tactics"]), "motifs"),
     (dict(NEW, trigger=""), "missing trigger"),
     (dict(NEW, source="X9"), "source"),
-    (dict(NEW, rule="Bring the king " + "and keep it near the pawns " * 5 + "on e4."), "words")])
+    (dict(NEW, rule="Bring the king " + "and keep it near the pawns " * 5 + "on e4."), "words"),
+    (dict(NEW, rule="With my king on b1, play Kc2 before the rook checks."), "exact squares"),
+    (dict(NEW, features=[]), "missing features"),
+    (dict(NEW, features=["rook_endgame", "kings_far_apart"]), "unknown feature tags"),
+    (dict(NEW, features=["rook_endgame", "queens_off"]), "not true at the source position")])
 def test_parse_rejects_bad_lessons(bad, why):
     changes, problems = learn.parse_changes(answer("lessons", {"add": [bad]}), [], FOUND)
     assert changes["add"] == [] and any(why in p for p in problems)
 
 def test_slide_lesson_needs_self_assessment_motif():
-    found = {"D1": dict(row=None, slide=dict(from_move=20, fen_start="fenA", win_drop=9.5), text="[D1] ...")}
+    found = {"D1": dict(row=None, slide=dict(from_move=20, fen_start="fenA", win_drop=9.5), text="[D1] ...", tags=["rook_endgame"])}
     slide = dict(NEW, source="D1")
     changes, problems = learn.parse_changes(answer("lessons", {"add": [slide]}), [], found)
     assert changes["add"] == [] and "missed slide" in problems[0]
@@ -69,6 +73,7 @@ def test_apply_changes_fills_source_kind_and_id():
     assert lessons[0]["status"] == "retired"
 
 def test_retry_once_then_keep_valid(folder, monkeypatch):
+    monkeypatch.setattr(learn, "tags_at", lambda board, color: ["rook_endgame"])
     replies = iter([answer("lessons", {"add": [dict(NEW, rule="Think harder.")]}), answer("lessons", {"add": [NEW]})])
     monkeypatch.setattr(match, "ask_claude", lambda prompt, timeout=None: next(replies))
     rows = [row(1, "Claude", "Mistake", loss=12.4), row(2, "Stockfish", "Best")]
@@ -160,9 +165,9 @@ def test_demotion_turns_rule_into_lesson(folder, monkeypatch):
     stats["R04"].update(retrieved=20, helped=5, cited_games=list(range(1, 11)))
     knowledge.save_stats(str(folder), stats)
     monkeypatch.setattr(match, "ask_claude", lambda prompt, timeout=None: answer("demotion", {
-        "keep_as_lesson": True, "trigger": "rook on d2 or b2 and an enemy dark-squared bishop", "phase": "middlegame",
-        "motifs": ["rook_activity"]}))
+        "keep_as_lesson": True, "trigger": "my rook stands on a diagonal of an enemy bishop", "phase": "middlegame",
+        "motifs": ["rook_activity"], "features": ["my_rook_on_enemy_bishop_diagonal"]}))
     learn.demote(11, baseline=0.6)
     assert "R04" not in [r["id"] for r in knowledge.load_rules(str(folder))]
     new = knowledge.load_lessons(str(folder))[-1]
-    assert new["kind"] == "demoted_rule" and new["source"]["demoted_from"] == "R04" and new["trigger"].startswith("rook on d2")
+    assert new["kind"] == "demoted_rule" and new["source"]["demoted_from"] == "R04" and new["features"] == ["my_rook_on_enemy_bishop_diagonal"]

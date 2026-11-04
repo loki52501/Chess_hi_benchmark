@@ -11,7 +11,9 @@ MOTIFS = ("king_activity", "passed_pawn", "opposition", "rook_activity", "pawn_r
           "fork", "pin", "pawn_break", "piece_activity", "king_safety", "prophylaxis", "conversion", "self_assessment")
 PHASES = ("opening", "middlegame", "endgame", "any")
 KINDS = ("mistake", "good_move", "opponent_shot", "self_assessment")
-LESSON_FIELDS = ("rule", "trigger", "check", "phase", "motifs")   # what Claude has to fill in for a new lesson
+LESSON_FIELDS = ("rule", "trigger", "check", "phase", "motifs", "features")   # what Claude fills in for a new lesson
+SQUARE = re.compile(r"(?<![a-z])[a-h][1-8](?![0-9])")   # e4, also inside moves like Bd4 or Nxc6
+EXAMPLE = re.compile(r"e\.g\.[^);]*?(?=[);]|\.\s|\.?$)")   # "e.g. ..." up to ")", ";" or the end of the sentence
 SEEDS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "seeds")
 # a rule must name something on the board, so "be careful" style advice is rejected
 CHESS_NOUN = re.compile(r"\b(kings?|queens?|rooks?|bishops?|knights?|pawns?|files?|[a-h][1-8]|[a-h]-pawn)\b", re.I)
@@ -86,13 +88,29 @@ def problems_with(entry, fields=LESSON_FIELDS):
             problems.append(f"phase {value!r} is not one of {', '.join(PHASES)}")
         elif field == "motifs" and (not isinstance(value, list) or any(m not in MOTIFS for m in value)):
             problems.append(f"motifs {value!r} must be a list from: {', '.join(MOTIFS)}")
+        elif field == "features" and (not isinstance(value, list) or not all(isinstance(t, str) for t in value)):
+            problems.append(f"features {value!r} must be a list of tag names")
     rule = str(entry.get("rule") or "")
     if "rule" in fields and rule:
         if words(rule) > MAX_RULE_WORDS:
             problems.append(f"rule has {words(rule)} words (max {MAX_RULE_WORDS})")
         if not CHESS_NOUN.search(rule):
             problems.append("rule names no piece, pawn, square, file or king")
+        problems += pattern_problems("rule", rule, examples_allowed=1)
+    if "trigger" in fields and entry.get("trigger"):
+        problems += pattern_problems("trigger", str(entry["trigger"]), examples_allowed=0)
     return problems
+
+def pattern_problems(field, text, examples_allowed):
+    """Rules and triggers describe the pattern, not exact squares; squares may appear once, after "e.g.", in a rule."""
+    if text.count("e.g.") > examples_allowed:
+        return [f"{field} may use \"e.g.\" at most {examples_allowed} time(s)"]
+    squares = SQUARE.findall(EXAMPLE.sub("", text) if examples_allowed else text)
+    if squares:
+        return [f"{field} names exact squares ({', '.join(dict.fromkeys(squares))}); describe the pattern instead "
+                f"(my king, the castled side, my 2nd rank, the long diagonal...)"
+                + ("; squares are allowed once, after \"e.g.\"" if examples_allowed else "")]
+    return []
 
 # --- setting up a games folder ---------------------------------------------------------------------
 
