@@ -6,7 +6,8 @@ LEARN_TIMEOUT = 600     # reviewing a whole game takes longer than one move
 MAX_MISTAKES = 10       # Claude's Inaccuracies/Mistakes/Blunders/Misses sent, worst first
 MAX_GOOD_MOVES = 3      # Claude's Great/Best moves in hard positions sent as positive examples
 MAX_SHOTS = 3           # Stockfish's Great moves against Claude
-MAX_NEW_LESSONS = 3     # most new lessons per game
+MAX_NEW = {"mistake": 2, "opponent_shot": 1, "self_assessment": 1, "good_move": 1}   # new lessons per game, per kind
+UPDATE_OVERLAP = 0.5    # a new lesson sharing this share of its tags with an existing one updates that one instead
 HARD_GAP = 10           # a position is "hard" when the 2nd-best move is this many win% worse
 RETIRE_AFTER = 10       # a lesson cited this often with a help rate below Claude's average is retired
 PROMOTE_GAMES = 3       # this many similar lessons from this many different games -> a general rule
@@ -233,9 +234,12 @@ def lessons_prompt(rows, summary, intro, found, lessons, rules, stats):
             f"=== YOUR ACTIVE LESSONS for {', '.join(sorted(phases))} ===\n{lesson_lines}\n\n"
             "=== TASK ===\n"
             "1. Briefly analyse: which patterns explain the MISTAKES? What did you do right in the GOOD MOVES? "
-            "For each OPPONENT SHOT, what should you have anticipated on your move just before it? "
+            "For each OPPONENT SHOT, which of your two moves before it allowed it, and what should you have seen? "
             "For each MISSED SLIDE, how should you have recognised the decline yourself?\n"
             "2. Update your lessons.\n" + GOOD_LESSON + "\n"
+            "New lessons per game, by the kind of item they come from: at most 2 from MISTAKES, 1 from OPPONENT SHOTS, "
+            "1 from MISSED SLIDES and 1 from GOOD MOVES. If a new lesson would share half or more of its features with an "
+            "existing lesson, update that lesson instead.\n"
             f"phase: one of {', '.join(knowledge.PHASES)}. motifs: from {', '.join(knowledge.MOTIFS)}.\n"
             "Lessons from a MISSED SLIDE use the motif self_assessment or prophylaxis.\n"
             "Every new lesson names the item it comes from in \"source\" (e.g. \"M2\", \"G1\", \"S1\", \"D1\"); its features "
@@ -305,13 +309,33 @@ def apply_changes(lessons, changes, found, i):
         by_id[u["id"]].update({k: v for k, v in u.items() if k != "id"})
     for x in changes["retire"]:
         by_id[x]["status"] = "retired"
-    for entry in changes["add"][:MAX_NEW_LESSONS]:
+    used = {}   # new lessons per kind so far
+    for entry in changes["add"]:
         label = entry["source"]
-        lessons.append(dict(id=knowledge.next_lesson_id(lessons), rule=entry["rule"], trigger=entry["trigger"],
-                            check=entry["check"], phase=entry["phase"], motifs=entry["motifs"], features=entry["features"],
-                            source=source_of(found[label], i), kind=KIND_OF[label[0]], created_game=i,
-                            retrieved=0, helped=0, status="active"))
+        kind = KIND_OF[label[0]]
+        if used.get(kind, 0) >= MAX_NEW.get(kind, 0):   # an unused slot of one kind doesn't go to another
+            match.log(f"  skipped new {kind} lesson (at most {MAX_NEW.get(kind, 0)} per game): {entry['rule']}")
+            continue
+        used[kind] = used.get(kind, 0) + 1
+        fields = {k: entry[k] for k in ("rule", "trigger", "check", "phase", "motifs", "features")}
+        twin = overlapping(lessons, entry["features"])
+        if twin:   # prefer updating an existing lesson about the same pattern over adding a near-copy
+            match.log(f"  new lesson shares {UPDATE_OVERLAP:.0%}+ of its tags with {twin['id']}: updating {twin['id']} instead")
+            twin.update(fields)
+            continue
+        lessons.append(dict(id=knowledge.next_lesson_id(lessons), **fields, source=source_of(found[label], i), kind=kind,
+                            created_game=i, retrieved=0, helped=0, status="active"))
     return lessons
+
+def overlapping(lessons, tags):   # the active lesson sharing the biggest share (>= UPDATE_OVERLAP) of these tags, newest on ties
+    tags = set(tags or [])
+    best = None
+    for l in lessons:
+        if l.get("status") == "active" and tags:
+            share = len(tags & set(l.get("features") or [])) / len(tags)
+            if share >= UPDATE_OVERLAP and (best is None or share >= best[0]):
+                best = (share, l)
+    return best[1] if best else None
 
 def learn_lessons(i, rows, summary, intro, positions=None, color=chess.WHITE):
     lessons, rules, stats = knowledge.load_lessons(folder()), knowledge.load_rules(folder()), knowledge.load_stats(folder())

@@ -73,6 +73,27 @@ def test_apply_changes_fills_source_kind_and_id():
     assert new["source"] == dict(game=9, move=2, fen="fen3", played="m3", best="Kd5", loss=12.4, cls="Mistake")
     assert lessons[0]["status"] == "retired"
 
+def test_caps_per_kind():
+    found = {f"M{n}": dict(row=row(2 * n + 1, "Claude", "Mistake", loss=10), text="", tags=[f"t{n}"]) for n in (1, 2, 3)}
+    found["S1"] = dict(row=row(9, "Claude", "Best"), text="", tags=["x"])
+    adds = [dict(NEW, rule=f"Push the passed pawn {n}.", source=f"M{n}", features=[f"tag_{n}"]) for n in (1, 2, 3)]
+    lessons = learn.apply_changes([], {"add": adds, "update": [], "retire": []}, found, i=5)
+    assert [l["rule"] for l in lessons] == ["Push the passed pawn 1.", "Push the passed pawn 2."]   # 3rd mistake: no slot
+    assert all(l["kind"] == "mistake" for l in lessons)                                         # the shot slot stays unused
+    shot = dict(NEW, rule="Watch the knight jump.", source="S1", features=["tag_9"])
+    lessons = learn.apply_changes(lessons, {"add": [shot, dict(shot, rule="Another shot.", features=["tag_8"])],
+                                            "update": [], "retire": []}, found, i=5)
+    assert [l["kind"] for l in lessons] == ["mistake", "mistake", "opponent_shot"]
+
+def test_new_lesson_with_shared_tags_updates_the_existing_one():
+    old = lesson("L004", tags=["rook_endgame", "my_passed_pawn"], retrieved=6, helped=4)
+    new = dict(NEW, rule="Put the rook behind the passed pawn.", features=["rook_endgame", "queens_off"])   # shares 50%
+    lessons = learn.apply_changes([old], {"add": [new], "update": [], "retire": []}, FOUND, i=8)
+    assert len(lessons) == 1 and lessons[0]["id"] == "L004" and lessons[0]["rule"] == "Put the rook behind the passed pawn."
+    assert lessons[0]["features"] == ["rook_endgame", "queens_off"] and lessons[0]["retrieved"] == 6   # stats kept
+    other = dict(NEW, rule="Trade into the pawn ending.", features=["queens_off", "pawn_endgame"])     # shares 0%
+    assert len(learn.apply_changes([lesson("L004")], {"add": [other], "update": [], "retire": []}, FOUND, i=8)) == 2
+
 def test_retry_once_then_keep_valid(folder, monkeypatch):
     monkeypatch.setattr(learn, "tags_at", lambda board, color: ["rook_endgame"])
     replies = iter([answer("lessons", {"add": [dict(NEW, rule="Think harder.")]}), answer("lessons", {"add": [NEW]})])
