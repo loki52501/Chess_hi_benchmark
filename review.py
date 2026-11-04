@@ -104,7 +104,7 @@ def review_pgn(game, engine, lessons_used=None):
                          fen_before=fen, san=san, best_san=best_san, best_pv_san=best_line,
                          cp_before=cp_best, cp_after=cp_after, win_before=round(win_before, 2),
                          win_after=round(win_after, 2), loss=round(loss, 2), cls=cls, phase=ph,
-                         gap=round(win_before - win_second, 2) if second else None,   # how much worse the 2nd-best move was
+                         multipv_gap=round(win_before - win_second, 2) if second else None,   # how much worse the 2nd-best move was
                          lessons=lessons_used.get(ply, [])))
     return rows
 
@@ -136,7 +136,7 @@ def print_pairs(rows):
     for k, r in greats:
         prev = before(k)
         after = f"after Claude's {move_number(prev)} {prev['san']} ({prev['cls']}), " if prev else ""
-        print(f"  {after}Stockfish found {move_number(r)} {r['san']}!! (the next best move was {r['gap']:.1f}% worse)")
+        print(f"  {after}Stockfish found {move_number(r)} {r['san']}!! (the next best move was {r['multipv_gap']:.1f}% worse)")
     if not greats:
         print("  (none)")
     print("\nClaude's misses - what Claude could have won:")

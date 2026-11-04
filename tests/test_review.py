@@ -92,7 +92,7 @@ def review_one_move(fen, san):
 def test_great_on_hanging_queen():
     row = review_one_move(HANGING_QUEEN, "Rxd5")
     assert row["cls"] == "Great" and row["best_san"] == "Rxd5" and row["loss"] == 0
-    assert row["player"] == "Claude" and row["phase"] == "endgame" and row["gap"] >= 15
+    assert row["player"] == "Claude" and row["phase"] == "endgame" and row["multipv_gap"] >= 15
 
 @needs_stockfish
 def test_miss_on_hanging_queen():
@@ -106,7 +106,7 @@ def fake_rows(classes):   # rows for 1.e4 e5 2.Nf3 Nc6 ... with the given classe
     sans = ["e4", "e5", "Nf3", "Nc6", "Bc4", "Nd4"][:len(classes)]
     return [dict(ply=n, side="white" if n % 2 else "black", player="Claude" if n % 2 else "Stockfish",
                  san=s, best_san="Nf3", best_pv_san="", cls=c, loss=12.4 if c in review.WORSE_THAN_GOOD else 0,
-                 cp_before=250, cp_after=50, gap=20)
+                 cp_before=250, cp_after=50, multipv_gap=20)
             for n, (s, c) in enumerate(zip(sans, classes), 1)]
 
 def test_annotated_pgn_round_trip(tmp_path):
