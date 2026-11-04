@@ -1,0 +1,9 @@
+# separate project with its own git repo
+lichess-tauri/
+# old runs
+archive/
+# generated game data (logs, PGNs, reviews, lessons) and experiment output
+games/
+games_*/
+experiments/
+__pycache__/
