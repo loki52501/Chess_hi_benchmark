@@ -1,35 +1,20 @@
-import chess, chess.engine, chess.pgn, glob, re
-import match   # same Stockfish, Claude settings, games folder and rules file
+import chess, chess.pgn, glob, re
+import match, review   # same Stockfish, Claude settings, games folder and rules file; review.py rates the moves
 
 MAX_RULES = 12        # keep the list short so Claude actually follows it
-ANALYSIS_DEPTH = 14   # how deep full-strength Stockfish checks each position
 LEARN_TIMEOUT = 600   # reviewing a whole game takes longer than one move
+BAD_CLASSES = ("Inaccuracy", "Mistake", "Blunder", "Miss")
 
-def clip(cp):   # centipawns, capped so a mate (huge number) doesn't swamp everything
-    return max(-1000, min(1000, cp))
-
-def review_moves(game):
-    """Full-strength Stockfish rates every Claude (White) move: eval after it, and how much it lost vs the best move."""
-    engine = chess.engine.SimpleEngine.popen_uci(match.STOCKFISH)   # no Skill Level = full strength
-    board, evals, mistakes = game.board(), [], []
-    for move in game.mainline_moves():
-        if board.turn == chess.WHITE:
-            before = engine.analyse(board, chess.engine.Limit(depth=ANALYSIS_DEPTH))
-            best, san, n = board.san(before["pv"][0]), board.san(move), board.fullmove_number
-            board.push(move)
-            after = engine.analyse(board, chess.engine.Limit(depth=ANALYSIS_DEPTH))
-            ev_before = clip(before["score"].white().score(mate_score=10000))   # + = good for Claude
-            ev_after = clip(after["score"].white().score(mate_score=10000))
-            evals.append(f"{n}.{san} ({ev_after / 100:+.1f})")
-            if ev_before - ev_after >= 100 and san != best:   # lost 1+ pawn of value
-                kind = "BLUNDER" if ev_before - ev_after >= 300 else "mistake"
-                mistakes.append((ev_before - ev_after, f"{n}. {san} ({kind}): eval {ev_before / 100:+.1f} -> "
-                                                       f"{ev_after / 100:+.1f}, best was {best}"))
-        else:
-            board.push(move)
-    engine.quit()
-    worst = [text for _, text in sorted(mistakes, reverse=True)[:6]]
-    return " ".join(evals), worst
+def review_moves(i):
+    """Review game i with review.py; return Claude's evals after each move and its 6 worst moves as text."""
+    rows, _ = review.review_game(i, quiet=True)
+    mine = [r for r in rows if r["player"] == "Claude"]
+    num = lambda r: f"{(r['ply'] + 1) // 2}{'.' if r['side'] == 'white' else '...'}"
+    evals = " ".join(f"{num(r)}{r['san']} ({r['cp_after'] / 100:+.1f})" for r in mine)
+    bad = sorted((r for r in mine if r["cls"] in BAD_CLASSES), key=lambda r: -r["loss"])[:6]
+    worst = [f"{num(r)} {r['san']} ({r['cls']}): eval {r['cp_before'] / 100:+.1f} -> {r['cp_after'] / 100:+.1f}, "
+             f"best was {r['best_san']}" for r in bad]
+    return evals, worst
 
 def record():   # Claude's results over all finished games in the games folder
     results = [chess.pgn.read_headers(open(f, encoding="utf-8")).get("Result") for f in glob.glob(f"{match.GAMES_DIR}/game_*.pgn")]
@@ -43,7 +28,7 @@ def learn_from_game(i):
     verdict = {"1-0": "WON", "0-1": "LOST", "1/2-1/2": "DREW"}.get(result, "did not finish")
     match.log(f"\n===== Learning from game {i}: Claude {verdict} ({result}, {how}) - checking moves with Stockfish =====")
 
-    evals, worst = review_moves(game)
+    evals, worst = review_moves(i)
     old_rules = match.load_rules()
     prompt = (f"You are Claude. You just played White against Stockfish (skill {match.STOCKFISH_SKILL}) and {verdict} "
               f"({result}, {how}). Your record so far: {record()}.\n\n"
