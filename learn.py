@@ -9,7 +9,8 @@ MAX_SHOTS = 3           # Stockfish's Great moves against Claude
 MAX_NEW_LESSONS = 3     # most new lessons per game
 HARD_GAP = 10           # a position is "hard" when the 2nd-best move is this many win% worse
 RETIRE_AFTER = 10       # a lesson cited this often with a help rate below Claude's average is retired
-PROMOTE_GAMES = 3       # this many lessons from this many different games with one idea -> a general rule
+PROMOTE_GAMES = 3       # this many similar lessons from this many different games -> a general rule
+SIMILAR_JACCARD = 0.5   # lessons are similar with the same primary motif and this share of feature tags in common
 DEMOTE_AFTER_GAMES = 10 # a rule cited in this many games with a low help rate goes back to being a lesson
 MISTAKE_CLASSES = ("Inaccuracy", "Mistake", "Blunder", "Miss")
 KIND_OF = {"M": "mistake", "G": "good_move", "S": "opponent_shot", "D": "self_assessment"}
@@ -359,15 +360,42 @@ def ask_json(tag, prompt):   # one Claude call whose answer is JSON between <tag
 def declined_file():
     return match.games_file("promotions_declined.json")
 
-def promotion_group(lessons):   # the largest group of 3+ active lessons from 3+ games with the same motif + phase
+def jaccard(a, b):
+    a, b = set(a or []), set(b or [])
+    return len(a & b) / len(a | b) if a | b else 0.0
+
+def similar(a, b):   # same primary motif and at least half of their feature tags shared (Jaccard)
+    return bool(a["motifs"]) and bool(b["motifs"]) and a["motifs"][0] == b["motifs"][0] \
+        and jaccard(a.get("features"), b.get("features")) >= SIMILAR_JACCARD
+
+def similar_groups(lessons):   # each active lesson with the lessons similar to it; biggest first, no duplicates
+    active = [l for l in lessons if l["status"] == "active"]
+    groups, seen = [], set()
+    for seed in active:
+        group = [seed] + [l for l in active if l is not seed and similar(seed, l)]
+        ids = frozenset(l["id"] for l in group)
+        if len(group) >= 2 and ids not in seen:
+            seen.add(ids)
+            groups.append(group)
+    return sorted(groups, key=len, reverse=True)
+
+def log_candidates(groups):   # what is close to being promoted, after every game
+    lines = ["Promotion candidates (same primary motif, feature Jaccard >= %.1f):" % SIMILAR_JACCARD]
+    for g in groups:
+        shared = sorted(set.intersection(*(set(l.get("features") or []) for l in g)))
+        games = sorted({l["created_game"] for l in g})
+        ready = "READY" if len(g) >= PROMOTE_GAMES and len(games) >= PROMOTE_GAMES else f"needs {PROMOTE_GAMES} lessons from {PROMOTE_GAMES} games"
+        lines.append(f"  {', '.join(l['id'] for l in g)} - motif {g[0]['motifs'][0]}, games {games}, "
+                     f"shared tags: {', '.join(shared) or '-'} - {ready}")
+    match.log("\n".join(lines) if groups else "Promotion candidates: none (no two active lessons are similar yet)")
+
+def promotion_group(lessons):   # the largest similar group of 3+ active lessons from 3+ games not declined before
     declined = json.load(open(declined_file(), encoding="utf-8")) if os.path.exists(declined_file()) else []
-    groups = {}
-    for l in lessons:
-        if l["status"] == "active" and l["motifs"]:
-            groups.setdefault((l["motifs"][0], l["phase"]), []).append(l)
-    candidates = [g for g in groups.values() if len({l["created_game"] for l in g}) >= PROMOTE_GAMES
-                  and sorted(l["id"] for l in g) not in declined]
-    return max(candidates, key=len, default=None), declined
+    groups = similar_groups(lessons)
+    log_candidates(groups)
+    ready = [g for g in groups if len(g) >= PROMOTE_GAMES and len({l["created_game"] for l in g}) >= PROMOTE_GAMES
+             and sorted(l["id"] for l in g) not in declined]
+    return (ready[0] if ready else None), declined
 
 def promote(i):
     lessons, rules, stats = knowledge.load_lessons(folder()), knowledge.load_rules(folder()), knowledge.load_stats(folder())
@@ -381,23 +409,26 @@ def promote(i):
             match.log(f"Promotion skipped: rules.md is full and no rule has been cited {RETIRE_AFTER}+ times yet")
             return
         replace = min(tried, key=lambda r: knowledge.help_rate(stats[r["id"]]))
-    listing = "\n".join(f"[{l['id']}] (game {l['created_game']}) {l['rule']} | When: {l['trigger']} | Check: {l['check']}" for l in group)
-    answer = ask_json("promotion", (
-        f"These {len(group)} lessons from {len({l['created_game'] for l in group})} different games share the motif "
-        f"{group[0]['motifs'][0]} in the {group[0]['phase']} phase:\n{listing}\n\n"
-        "Do they express one general idea that should be checked before every move? If yes, write it as one general rule "
-        f"({knowledge.MAX_RULE_WORDS} words or fewer, naming a piece, pawn, square, file or the king) plus a CHECK: one yes/no question.\n"
-        "Reply with JSON between <promotion> and </promotion>, e.g.\n"
-        '<promotion>{"same_idea": true, "rule": "...", "check": "...?"}</promotion>   or   <promotion>{"same_idea": false}</promotion>'))
+    listing = "\n".join(f"[{l['id']}] (game {l['created_game']}) {l['rule']} | When: {l['trigger']} | Check: {l['check']} "
+                        f"| features: {', '.join(l.get('features') or [])}" for l in group)
+    shared = sorted(set.intersection(*(set(l.get("features") or []) for l in group)))
+    prompt = (f"These {len(group)} lessons from {len({l['created_game'] for l in group})} different games describe the same "
+              f"pattern (motif {group[0]['motifs'][0]}, shared feature tags: {', '.join(shared) or '-'}):\n{listing}\n\n"
+              "It keeps coming back, so it becomes a general rule that is checked before every move. Write it as one rule "
+              f"({knowledge.MAX_RULE_WORDS} words or fewer, a pattern naming pieces, pawns, files or the king; exact squares "
+              "at most once, after \"e.g.\") plus a CHECK: one yes/no question.\n"
+              "Reply with JSON between <promotion> and </promotion>, e.g.\n"
+              '<promotion>{"rule": "...", "check": "...?"}</promotion>')
     ids = sorted(l["id"] for l in group)
-    if not answer or not answer.get("same_idea"):
+    answer = ask_json("promotion", prompt)
+    bad = knowledge.problems_with(answer or {}, fields=["rule", "check"])
+    if bad:   # ask once more
+        answer = ask_json("promotion", prompt + "\n\nYour previous answer had these problems:\n" + "\n".join(f"- {p}" for p in bad))
+        bad = knowledge.problems_with(answer or {}, fields=["rule", "check"])
+    if bad:   # remembered, so the same group isn't asked again after every game
         declined.append(ids)
         with open(declined_file(), "w", encoding="utf-8") as f:
             json.dump(declined, f)
-        match.log(f"Promotion declined for {', '.join(ids)}")
-        return
-    bad = knowledge.problems_with(answer, fields=["rule", "check"])
-    if bad:
         match.log(f"Promotion of {', '.join(ids)} skipped, the merged rule has problems: {'; '.join(bad)}")
         return
     new_id = knowledge.next_rule_id(rules, stats)

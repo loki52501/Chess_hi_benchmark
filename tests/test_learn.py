@@ -3,9 +3,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) 
 import pytest
 import match, learn, knowledge
 
-def lesson(id, game=1, motif="king_activity", phase="endgame", retrieved=0, helped=0, status="active"):
-    return dict(id=id, rule=f"Bring the king to e4 ({id}).", trigger="rook endgame", check="Is my king on e4?",
-                phase=phase, motifs=[motif], source={}, kind="mistake", created_game=game,
+def lesson(id, game=1, motif="king_activity", phase="endgame", retrieved=0, helped=0, status="active",
+           tags=("rook_endgame", "my_passed_pawn")):
+    return dict(id=id, rule=f"Bring the king toward the passed pawn ({id}).", trigger="rook endgame", check="Is my king near it?",
+                phase=phase, motifs=[motif], features=list(tags), source={}, kind="mistake", created_game=game,
                 retrieved=retrieved, helped=helped, status=status)
 
 def row(ply, player, cls, gap=None, loss=0.0, cited=None, why=None):
@@ -152,13 +153,32 @@ def test_promotion_replaces_weakest_tried_rule_when_full(folder, monkeypatch):
     ids = [r["id"] for r in knowledge.load_rules(str(folder))]
     assert "R12" not in ids and ids[-1] == "R13" and len(ids) == 12
 
-def test_declined_promotion_is_not_asked_again(folder, monkeypatch):
+def test_similarity_uses_tags_and_primary_motif():
+    a = lesson("L001", tags=["rook_endgame", "my_passed_pawn"])
+    assert learn.similar(a, lesson("L002", tags=["rook_endgame", "my_passed_pawn", "queens_off"]))   # Jaccard 2/3
+    assert not learn.similar(a, lesson("L003", tags=["rook_endgame", "queens_off"]))                  # Jaccard 1/3
+    assert not learn.similar(a, lesson("L004", motif="pin"))                                          # other primary motif
+
+def test_dissimilar_lessons_are_not_promoted(folder, monkeypatch):
+    knowledge.save_lessons(str(folder), [lesson("L001", game=1), lesson("L002", game=2, tags=["queens_off", "pawn_endgame"]),
+                                         lesson("L003", game=3, tags=["king_castled_queenside"])])
+    monkeypatch.setattr(match, "ask_claude", lambda prompt, timeout=None: pytest.fail("should not ask"))
+    learn.promote(5)
+
+def test_candidates_logged_for_pairs(folder):
+    knowledge.save_lessons(str(folder), [lesson("L001", game=1), lesson("L002", game=2), lesson("L003", game=2, motif="pin")])
+    learn.promote(5)
+    log = (folder / "test.log").read_text(encoding="utf-8")
+    assert "Promotion candidates" in log and "L001, L002 - motif king_activity, games [1, 2]" in log and "needs 3 lessons" in log
+
+def test_invalid_merged_rule_is_asked_again_then_remembered(folder, monkeypatch):
     knowledge.save_lessons(str(folder), [lesson("L001", game=1), lesson("L002", game=2), lesson("L003", game=3)])
     calls = []
-    monkeypatch.setattr(match, "ask_claude", lambda prompt, timeout=None: calls.append(1) or answer("promotion", {"same_idea": False}))
+    monkeypatch.setattr(match, "ask_claude", lambda prompt, timeout=None: calls.append(1) or answer("promotion", {
+        "rule": "Think harder in endgames.", "check": "Am I focused?"}))
     learn.promote(5)
     learn.promote(6)
-    assert len(calls) == 1 and len(knowledge.load_rules(str(folder))) == 11
+    assert len(calls) == 2 and len(knowledge.load_rules(str(folder))) == 11   # asked twice in game 5, not again in game 6
 
 def test_demotion_turns_rule_into_lesson(folder, monkeypatch):
     stats = knowledge.load_stats(str(folder))
