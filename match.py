@@ -9,7 +9,7 @@ CLAUDE_EFFORT = "medium"                    # how hard Claude thinks: low / medi
 CLAUDE_TIMEOUT = 300                        # seconds per answer; slower = attempt fails and Claude is asked again
 TIMED_OUT = "(no answer - timed out)"       # what ask_claude returns when Claude Code took too long
 GAMES_DIR = "games"                         # game_<i>.log (moves), game_<i>.pgn and claude_<i>.log (thinking) go here
-LEARN_MODE = "rules"                        # "lessons": rules.md + lessons.jsonl (learn.py); "rules": one old-style rules.md list
+LEARN_MODE = "lessons"                      # "lessons": rules.md + lessons.jsonl (learn.py); "rules": one old-style rules.md list
 claude_log = None                           # Claude's thinking for the current game (opened in play_game)
 models_used = set()                         # exact model ids Claude Code reported in this game
 rules = ""                                  # rules Claude follows this game (loaded in play_game)
