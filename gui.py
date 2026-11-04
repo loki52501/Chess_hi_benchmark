@@ -19,6 +19,8 @@ def draw(board):
     last = board.peek() if board.move_stack else None
     for sq in chess.SQUARES:
         col, row = chess.square_file(sq), 7 - chess.square_rank(sq)   # row 0 = top = rank 8
+        if match.CLAUDE_COLOR == chess.BLACK:                         # Claude's side at the bottom
+            col, row = 7 - col, 7 - row
         color = "#f0d9b5" if (col + row) % 2 == 0 else "#b58863"
         if last and sq in (last.from_square, last.to_square):
             color = "#cdd26a"   # highlight the last move
@@ -43,7 +45,7 @@ def poll():   # runs every 100 ms in the window thread
     root.after(100, poll)
 
 root = tk.Tk()
-root.title("Claude vs Stockfish")
+root.title(match.players())
 canvas = tk.Canvas(root, width=8 * SQ, height=8 * SQ)
 canvas.pack(side="left")
 log_box = tk.Text(root, width=60, wrap="word", font=("Consolas", 10))

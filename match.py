@@ -3,6 +3,7 @@ import knowledge, features, prompts   # rules.md + lessons.jsonl, what is on the
 
 STOCKFISH = r"E:\apps\stockfish-windows-x86-64-avx2\stockfish\stockfish-windows-x86-64-avx2.exe"  # change to your stockfish path
 STOCKFISH_SKILL = 10                        # 0 (weakest) .. 20 (strongest)
+CLAUDE_COLOR = chess.WHITE                  # chess.WHITE or chess.BLACK (experiment.py alternates)
 CLAUDE = shutil.which("claude")             # path to the Claude Code CLI
 CLAUDE_MODEL = "opus"                     # sonnet / opus / haiku, or a full id like claude-opus-5-5
 CLAUDE_EFFORT = "medium"                    # how hard Claude thinks: low / medium / high / xhigh / max (higher = slower)
@@ -52,13 +53,26 @@ def next_game_number():   # 1 + highest existing game_<i>.log
 
 def save_pgn(i, board, result="*", termination=None):   # "*" = game still in progress
     game = chess.pgn.Game.from_board(board)
+    claude, stockfish = f"Claude ({', '.join(sorted(models_used)) or CLAUDE_MODEL})", f"Stockfish (skill {STOCKFISH_SKILL})"
+    white, black = (claude, stockfish) if CLAUDE_COLOR == chess.WHITE else (stockfish, claude)
     game.headers.update(Event="Claude vs Stockfish", Site="Local", Date=f"{datetime.date.today():%Y.%m.%d}",
-                        Round=str(i), White=f"Claude ({', '.join(sorted(models_used)) or CLAUDE_MODEL})",
-                        Black=f"Stockfish (skill {STOCKFISH_SKILL})", Result=result)
+                        Round=str(i), White=white, Black=black, Result=result)
     if termination:
         game.headers["Termination"] = termination
     with open(games_file(f"game_{i}.pgn"), "w", encoding="utf-8") as f:
         f.write(str(game) + "\n")
+
+def outcome(result, color=None):   # "win" / "draw" / "loss" from Claude's side, or the result itself (e.g. "*", "error: ...")
+    color = CLAUDE_COLOR if color is None else color
+    if result == "1/2-1/2":
+        return "draw"
+    if result in ("1-0", "0-1"):
+        return "win" if (result == "1-0") == (color == chess.WHITE) else "loss"
+    return result
+
+def players():   # "Claude [opus] (White) vs Stockfish [skill 10] (Black)"
+    claude, stockfish = f"Claude [{CLAUDE_MODEL}]", f"Stockfish [skill {STOCKFISH_SKILL}]"
+    return f"{claude} (White) vs {stockfish} (Black)" if CLAUDE_COLOR == chess.WHITE else f"{stockfish} (White) vs {claude} (Black)"
 
 def ask_claude(prompt, timeout=None, effort=None):   # timeout: seconds, default CLAUDE_TIMEOUT; effort: default CLAUDE_EFFORT
     global last_call
@@ -164,16 +178,16 @@ def play_game(on_move=lambda board: None, i=None):   # on_move is called after e
     game_log = open(games_file(f"game_{i}.log"), "w", encoding="utf-8")
     moves_log = open(games_file(f"moves_{i}.jsonl"), "w", encoding="utf-8")   # per Claude move: ids, EVAL, cost (for review.py)
     header = (f"Game {i} - {datetime.datetime.now():%Y-%m-%d %H:%M} - "
-              f"Claude [{CLAUDE_MODEL}] (White) vs Stockfish [skill {STOCKFISH_SKILL}] (Black)")
+              f"{players()}")
     game_log.write(header + "\n\n")
     log(f"===== {header} =====")
 
     result, reason = None, None
     while not board.is_game_over():
-        if board.turn == chess.WHITE:
+        if board.turn == CLAUDE_COLOR:
             last_move = {}
             player, move = "Claude", claude_move(board)
-            if move is None: result, reason = "0-1", "Claude forfeits: no legal move"; break
+            if move is None: result, reason = "0-1" if CLAUDE_COLOR == chess.WHITE else "1-0", "Claude forfeits: no legal move"; break
         else:
             player, move = "Stockfish", engine.play(board, chess.engine.Limit(time=0.1)).move
         san = board.san(move)
