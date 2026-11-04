@@ -1,0 +1,9 @@
+[Event "Claude vs Stockfish"]
+[Site "Local"]
+[Date "2026.11.04"]
+[Round "2"]
+[White "Claude (claude-opus-5-5)"]
+[Black "Stockfish (skill 10)"]
+[Result "0-1"]
+
+1. e4 c5 2. Nf3 e6 3. d4 cxd4 4. Nxd4 Nc6 5. Nc3 Qc7 6. Be3 a6 7. Qd2 Nf6 8. O-O-O Bb4 9. f3 b5 10. Kb1 Bb7 11. a3 Be7 12. g4 Rc8 13. g5 Nh5 14. Nxc6 Bxc6 15. f4 b4 16. axb4 Bxb4 17. Bd3 O-O 18. Rhf1 Rb8 19. e5 g6 20. Bxa6 Qa5 21. Be2 Bxc3 22. Qc1 Qa3 23. Bd4 Rxb2+ 24. Qxb2 Qxb2# 0-1

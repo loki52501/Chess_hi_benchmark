@@ -11,7 +11,6 @@ def test_passed_pawns_and_signature():
     f = features.features(ROOK_ENDING, chess.WHITE)
     assert f["phase"] == "endgame" and f["signature"] == "R+3P vs 3P"
     assert f["passed_mine"] == [("d5", 5)] and f["passed_theirs"] == [("a3", 6)]
-    assert {"passed_pawn", "pawn_race", "king_activity", "rook_activity", "conversion"} <= features.motifs(f)
     assert "endgame, R+3P vs 3P, passed pawns: mine d5 (5th); theirs a3 (6th)" in features.header(f)
 
 def test_hanging_king_center_and_files():
@@ -33,24 +32,38 @@ def test_back_rank_and_fork():
 
 # --- retrieval ----------------------------------------------------------------------------------------
 
-def lesson(id, phase, motifs, retrieved=0, helped=0, status="active"):
-    return dict(id=id, rule="r", trigger=f"t{id}", check=f"c{id}", phase=phase, motifs=motifs,
+def lesson(id, phase, tags, retrieved=0, helped=0, status="active"):
+    return dict(id=id, rule="r", trigger=f"t{id}", check=f"c{id}", phase=phase, motifs=["passed_pawn"], features=tags,
                 retrieved=retrieved, helped=helped, status=status)
 
+def test_score():
+    true_tags = features.tags(ROOK_ENDING, chess.WHITE)
+    assert {"enemy_passer_6th", "rook_endgame", "material_up"} <= set(true_tags)
+    s, matched = features.score(lesson("L1", "endgame", ["enemy_passer_6th", "rook_endgame", "queens_off"]), true_tags, "endgame")
+    assert matched == ["enemy_passer_6th", "queens_off", "rook_endgame"] and s == 3 * 3 + 1
+    s, _ = features.score(lesson("L2", "middlegame", ["enemy_passer_6th"], retrieved=4, helped=3), true_tags, "endgame")
+    assert s == 3 + 0 + 0.75                                         # help bonus once cited 3+ times
+    s, _ = features.score(lesson("L3", "endgame", ["enemy_passer_6th"], retrieved=2, helped=2), true_tags, "endgame")
+    assert s == 3 + 1                                                # cited only twice: no bonus yet
+
 def test_retrieve_order():
-    f = features.features(ROOK_ENDING, chess.WHITE)
-    lessons = [lesson("L001", "opening", ["passed_pawn"]),                  # wrong phase: left out
-               lesson("L002", "any", ["passed_pawn"]),                      # phase "any" ranks after "endgame"
-               lesson("L003", "endgame", ["fork"]),                         # endgame, no motif overlap
-               lesson("L004", "endgame", ["passed_pawn", "pawn_race"]),     # endgame, 2 motifs
-               lesson("L005", "endgame", ["passed_pawn"], retrieved=10, helped=2),
-               lesson("L006", "endgame", ["passed_pawn"], retrieved=10, helped=9),
-               lesson("L007", "endgame", ["passed_pawn"]),                  # same as L008 but older
-               lesson("L008", "endgame", ["passed_pawn"]),
-               lesson("L009", "endgame", ["passed_pawn", "pawn_race"], status="retired")]
-    picked = [l["id"] for l in features.retrieve(lessons, f, 10)]
-    assert picked == ["L004", "L006", "L008", "L007", "L005", "L003", "L002"]
-    assert len(features.retrieve(lessons, f, 5)) == 5
+    tags = features.tags(ROOK_ENDING, chess.WHITE)
+    lessons = [lesson("L001", "endgame", ["king_castled_queenside"]),                      # no tag true: never picked
+               lesson("L002", "any", ["my_back_rank_weak"]),                               # no tag true, phase any: filler only
+               lesson("L003", "middlegame", ["enemy_passer_6th", "rook_endgame"]),          # 6
+               lesson("L004", "endgame", ["enemy_passer_6th", "rook_endgame"]),             # 7
+               lesson("L005", "endgame", ["enemy_passer_6th"], retrieved=10, helped=2),     # 4.2
+               lesson("L006", "endgame", ["enemy_passer_6th"], retrieved=10, helped=9),     # 4.9
+               lesson("L007", "endgame", ["material_up"]),                                 # 4, older
+               lesson("L008", "endgame", ["material_up"]),                                 # 4, newer
+               lesson("L009", "endgame", ["enemy_passer_6th", "rook_endgame"], status="retired")]
+    assert [l["id"] for l in features.retrieve(lessons, tags, "endgame", 5)] == ["L004", "L003", "L006", "L005", "L008"]
+    assert [l["id"] for l in features.retrieve(lessons, tags, "endgame", 10)] == ["L004", "L003", "L006", "L005", "L008", "L007", "L002"]
+
+def test_no_matching_tags_means_nothing_or_any_filler():
+    tags = features.tags(chess.Board(), chess.WHITE)
+    lessons = [lesson("L001", "opening", ["queens_off"]), lesson("L002", "any", ["queens_off"])]
+    assert [l["id"] for l in features.retrieve(lessons, tags, "opening", 5)] == ["L002"]
 
 # --- parsing Claude's answer ---------------------------------------------------------------------------
 
@@ -73,7 +86,7 @@ def test_parse_cited_keeps_only_shown_ids():
 @pytest.fixture
 def setup(monkeypatch):
     monkeypatch.setattr(match, "rule_list", knowledge.load_rules(knowledge.SEEDS_DIR))
-    monkeypatch.setattr(match, "lessons", [lesson("L004", "endgame", ["passed_pawn"])])
+    monkeypatch.setattr(match, "lessons", [lesson("L004", "endgame", ["enemy_passer_6th"])])
     monkeypatch.setattr(match, "rules", "- old rule")
     monkeypatch.setattr(match, "log", lambda text: None)
 

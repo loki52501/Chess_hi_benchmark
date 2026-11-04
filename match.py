@@ -44,6 +44,8 @@ def log(text):   # screen (and GUI) + claude_<i>.log
     log_file(text)
 
 def log_file(text):   # claude_<i>.log only - for long things like the full prompt
+    if claude_log is None or claude_log.closed:   # nothing open (e.g. building a prompt in a test)
+        return
     claude_log.write(text + "\n"); claude_log.flush()
 
 def next_game_number():   # 1 + highest existing game_<i>.log
@@ -119,11 +121,21 @@ def parse_cited(reply, shown):   # R/L ids named in the PLAN line, only those Cl
     line = next((l for l in reversed(reply.splitlines()) if l.strip().upper().lstrip("*").startswith("PLAN:")), "")
     return [x for x in dict.fromkeys(re.findall(r"\b([RL]\d+)\b", line)) if x in shown]
 
+def log_retrieval(true_tags, phase, picked, top=10):   # why each lesson was or wasn't picked, in claude_<i>.log
+    lines = [f"[retrieval] {phase}, tags true here: {', '.join(true_tags) or '-'}"]
+    for s, l, matched in features.rank(lessons, true_tags, phase)[:top]:
+        mark = "PICKED" if l in picked else "      "
+        lines.append(f"  {mark} {l['id']} score {s:.2f}  matched: {', '.join(matched) or '-'}  "
+                     f"(features: {', '.join(l.get('features') or []) or '-'}; phase {l['phase']})")
+    log_file("\n".join(lines))
+
 def build_prompt(board):   # (prompt, retrieved lesson ids, ids shown, phase)
     f = features.features(board, board.turn)
     if PROTOCOL == "basic":
         return prompts.basic_prompt(board, rules), [], set(), f["phase"]
-    picked = features.retrieve(lessons, f, LESSONS_PER_MOVE)
+    true_tags = features.tags(board, board.turn)
+    picked = features.retrieve(lessons, true_tags, f["phase"], LESSONS_PER_MOVE)
+    log_retrieval(true_tags, f["phase"], picked)
     endgame = ENDGAME_MODE and f["phase"] == "endgame"
     refs = features.closest_refs(board, knowledge.load_jsonl(ENDGAME_REFS)) if endgame else []
     own = assessments[-ASSESSMENTS_SHOWN:] if SELF_ASSESSMENT else []

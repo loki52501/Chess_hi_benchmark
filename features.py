@@ -216,37 +216,6 @@ def features(board, me):
         blocked_pawns=any(board.piece_at(sq + (8 if me == chess.WHITE else -8)) == chess.Piece(chess.PAWN, them)
                           for sq in board.pieces(chess.PAWN, me) if 0 <= sq + (8 if me == chess.WHITE else -8) < 64))
 
-def motifs(f):   # the lesson motifs this position calls for
-    found = set()
-    endgame = f["phase"] == "endgame"
-    if f["passed_mine"] or f["passed_theirs"]:
-        found.add("passed_pawn")
-        if endgame and (f["passed_mine"] and f["passed_theirs"] or any(r >= 6 for _, r in f["passed_mine"] + f["passed_theirs"])):
-            found.add("pawn_race")
-    if endgame:
-        found.add("king_activity")
-        if f["only_kings_and_pawns"]:
-            found.add("opposition")
-    elif f["king_in_center"]:
-        found.add("king_safety")
-    if f["rooks_on"] and (f["open_files"] or f["half_open_mine"]):
-        found.add("rook_activity")
-    if f["hanging_mine"] or f["hanging_theirs"]:
-        found.add("hanging_piece")
-    if f["pinned_mine"]:
-        found.add("pin")
-    if f["fork_threat"] or f["fork_chance"]:
-        found.add("fork")
-    if f["back_rank_weak"]:
-        found.add("back_rank")
-    if f["blocked_pawns"] and not endgame:
-        found.add("pawn_break")
-    if f["phase"] == "middlegame":
-        found.add("piece_activity")
-    if f["material_diff"] >= 2:
-        found.add("conversion")
-    return found
-
 def header(f):   # one line, e.g. "endgame, R+3P vs R+2P, passed pawns: mine d5 (5th), theirs a3 (6th)"
     sq = lambda pawns: ", ".join(f"{s} ({r}th)" for s, r in pawns)
     parts = [f["phase"], f["signature"]]
@@ -265,17 +234,33 @@ def header(f):   # one line, e.g. "endgame, R+3P vs R+2P, passed pawns: mine d5 
         parts.append("half-open for me: " + ", ".join(f["half_open_mine"]))
     return ", ".join(parts)
 
-def rate(lesson):   # help rate with a prior, so a new lesson counts as 50%
-    return (lesson.get("helped", 0) + 1) / (lesson.get("retrieved", 0) + 2)
+TAG_WEIGHT = 3        # per feature tag of the lesson that is true in this position
+PHASE_BONUS = 1       # the lesson's phase is the position's phase
+RATE_AFTER = 3        # the help-rate bonus (0..1) counts once a lesson has been cited this often
 
-def retrieve(lessons, f, n):
-    """The n best active lessons: phase match first, then motif overlap, then help rate; ties go to the newest.
-    Lessons for a different phase are left out."""
-    wanted = motifs(f)
-    phase_score = lambda l: 2 if l["phase"] == f["phase"] else 1 if l["phase"] == "any" else 0
-    newest = lambda l: int(l["id"][1:]) if l["id"][1:].isdigit() else 0
-    fitting = [l for l in lessons if l.get("status") == "active" and phase_score(l)]
-    return sorted(fitting, key=lambda l: (-phase_score(l), -len(wanted & set(l["motifs"])), -rate(l), -newest(l)))[:n]
+def score(lesson, true_tags, phase):   # (score, the lesson's tags that are true here)
+    matched = sorted(set(lesson.get("features") or []) & set(true_tags))
+    s = TAG_WEIGHT * len(matched) + (PHASE_BONUS if lesson.get("phase") == phase else 0)
+    if lesson.get("retrieved", 0) >= RATE_AFTER:
+        s += lesson.get("helped", 0) / lesson["retrieved"]
+    return s, matched
+
+def newest(lesson):
+    digits = "".join(ch for ch in lesson["id"] if ch.isdigit())
+    return int(digits) if digits else 0
+
+def rank(lessons, true_tags, phase):   # [(score, lesson, matched tags)] for the active lessons, best first, ties to the newest
+    scored = [(*score(l, true_tags, phase), l) for l in lessons if l.get("status") == "active"]
+    return [(s, l, m) for s, m, l in sorted(scored, key=lambda x: (-x[0], -newest(x[2])))]
+
+def retrieve(lessons, true_tags, phase, n):
+    """The n best lessons for this position. A lesson needs at least one of its tags true here; only when fewer than n
+    lessons match are lessons with phase "any" added to fill up."""
+    ranked = rank(lessons, true_tags, phase)
+    picked = [l for s, l, matched in ranked if matched][:n]
+    if len(picked) < n:
+        picked += [l for s, l, matched in ranked if not matched and l.get("phase") == "any"][:n - len(picked)]
+    return picked
 
 # --- endgame reference positions ------------------------------------------------------------------
 
