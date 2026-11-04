@@ -228,6 +228,8 @@ def parse_changes(reply, lessons, found):
         bad = knowledge.problems_with(entry)
         if entry.get("source") not in found:
             bad.append(f"source {entry.get('source')!r} is not one of {', '.join(found) or '(no items)'}")
+        elif entry["source"].startswith("D") and not {"self_assessment", "prophylaxis"} & set(entry.get("motifs") or []):
+            bad.append("a lesson from a missed slide needs the motif self_assessment or prophylaxis")
         problems += [f"add {str(entry.get('rule', ''))[:60]!r}: {p}" for p in bad]
         if not bad:
             changes["add"].append(entry)

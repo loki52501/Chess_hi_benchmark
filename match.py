@@ -14,6 +14,8 @@ LEARN_MODE = "lessons"                      # "lessons": rules.md + lessons.json
 PROTOCOL = "full"                           # "full": forcing structure, rules + lessons for this position; "basic": the old prompt
 LESSONS_PER_MOVE = 5                        # lessons retrieved for each position (full protocol)
 ENDGAME_MODE = True                         # full protocol: endgame principles + reference positions once in an endgame
+SELF_ASSESSMENT = True                      # full protocol: show Claude its own last 5 EVAL/TREND/WHY lines (never engine output)
+ASSESSMENTS_SHOWN = 5
 ENDGAME_REFS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "endgame_refs.jsonl")
 claude_log = None                           # Claude's thinking for the current game (opened in play_game)
 models_used = set()                         # exact model ids Claude Code reported in this game
@@ -21,6 +23,7 @@ rules = ""                                  # rules.md as text (basic protocol),
 rule_list, lessons = [], []                 # parsed rules and lessons (full protocol), loaded in play_game
 last_call = {}                              # seconds / tokens / cost of the latest ask_claude call
 last_move = {}                              # what claude_move learned about its latest move (ids, EVAL, cost, ...)
+assessments = []                            # Claude's own EVAL/TREND/WHY for each of its moves this game
 EVAL_NUMBER = re.compile(r"EVAL:\s*\**\s*([+-]?\d+(?:\.\d+)?)", re.I)
 TREND = re.compile(r"TREND:\s*\**\s*(better|same|worse)\b", re.I)
 WHY = re.compile(r"WHY:\s*\**\s*(.+)", re.I)
@@ -109,7 +112,8 @@ def build_prompt(board):   # (prompt, retrieved lesson ids, ids shown, phase)
     picked = features.retrieve(lessons, f, LESSONS_PER_MOVE)
     endgame = ENDGAME_MODE and f["phase"] == "endgame"
     refs = features.closest_refs(board, knowledge.load_jsonl(ENDGAME_REFS)) if endgame else []
-    prompt = prompts.full_prompt(board, STOCKFISH_SKILL, rule_list, picked, features.header(f), refs, endgame)
+    own = assessments[-ASSESSMENTS_SHOWN:] if SELF_ASSESSMENT else []
+    prompt = prompts.full_prompt(board, STOCKFISH_SKILL, rule_list, picked, features.header(f), refs, endgame, own)
     return prompt, [l["id"] for l in picked], {r["id"] for r in rule_list} | {l["id"] for l in picked}, f["phase"]
 
 def claude_move(board, tries=3):
@@ -133,6 +137,7 @@ def claude_move(board, tries=3):
                              cited=parse_cited(reply, shown), self_eval=self_eval, trend=trend, why=why, **spent)
             log(f"[move info] retrieved: {', '.join(retrieved) or '-'} | cited: {', '.join(last_move['cited']) or '-'} | "
                 f"self_eval: {self_eval} | trend: {trend} | why: {why}")
+            assessments.append(dict(move_number=board.fullmove_number, self_eval=self_eval, trend=trend, why=why))
             return board.parse_san(move)
 
         if reply == TIMED_OUT:
@@ -149,6 +154,7 @@ def play_game(on_move=lambda board: None, i=None):   # on_move is called after e
     engine.configure({"Skill Level": STOCKFISH_SKILL})
     board = chess.Board()
     models_used.clear()
+    assessments.clear()
     init_games_dir()
     rules = load_rules()   # the latest rules and lessons, so every new game uses everything learned so far
     rule_list, lessons = knowledge.load_rules(GAMES_DIR), knowledge.load_lessons(GAMES_DIR)

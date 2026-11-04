@@ -49,6 +49,14 @@ def test_parse_rejects_bad_lessons(bad, why):
     changes, problems = learn.parse_changes(answer("lessons", {"add": [bad]}), [], FOUND)
     assert changes["add"] == [] and any(why in p for p in problems)
 
+def test_slide_lesson_needs_self_assessment_motif():
+    found = {"D1": dict(row=None, slide=dict(from_move=20, fen_start="fenA", win_drop=9.5), text="[D1] ...")}
+    slide = dict(NEW, source="D1")
+    changes, problems = learn.parse_changes(answer("lessons", {"add": [slide]}), [], found)
+    assert changes["add"] == [] and "missed slide" in problems[0]
+    changes, problems = learn.parse_changes(answer("lessons", {"add": [dict(slide, motifs=["self_assessment"])]}), [], found)
+    assert problems == [] and learn.apply_changes([], changes, found, 4)[0]["kind"] == "self_assessment"
+
 def test_parse_bad_json():
     assert learn.parse_changes("<lessons>{oops</lessons>", [], FOUND)[0] is None
     assert learn.parse_changes("nothing here", [], FOUND)[0] is None

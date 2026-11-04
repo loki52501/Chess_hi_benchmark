@@ -11,6 +11,8 @@ PHASES = ["opening", "middlegame", "endgame"]
 NAGS = {"Great": chess.pgn.NAG_BRILLIANT_MOVE, "Best": chess.pgn.NAG_GOOD_MOVE, "Inaccuracy": chess.pgn.NAG_DUBIOUS_MOVE,
         "Mistake": chess.pgn.NAG_MISTAKE, "Miss": chess.pgn.NAG_MISTAKE, "Blunder": chess.pgn.NAG_BLUNDER}   # !! ! ?! ? ? ??
 MARKS = {"Great": "!!", "Mistake": "?", "Miss": "MISS", "Blunder": "??"}   # flagged in the printed move list
+SLIDE_MOVES = 5       # a "missed slide": over this many Claude moves ...
+SLIDE_DROP = 8        # ... the engine win% fell this much while Claude's own TREND kept saying same/better
 
 # a few main lines; a move in the first 8 plies is "Book" if the game so far is the start of one of these
 BOOK_LINES = [line.split() for line in [
@@ -169,7 +171,45 @@ def summarize(rows, game):
                            moves_by_phase={p: sum(r["phase"] == p for r in mine) for p in PHASES},
                            counts={c: sum(r["cls"] == c for r in mine) for c in CLASSES})
     return dict(white=game.headers.get("White"), black=game.headers.get("Black"), result=game.headers.get("Result"),
-                depth=REVIEW_DEPTH, sides=sides)
+                depth=REVIEW_DEPTH, sides=sides, calibration=calibration(rows))
+
+def correlation(xs, ys):   # Pearson; None if too few points or no variation
+    if len(xs) < 3:
+        return None
+    mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
+    sx, sy = math.sqrt(sum((x - mx) ** 2 for x in xs)), math.sqrt(sum((y - my) ** 2 for y in ys))
+    return round(sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / (sx * sy), 3) if sx and sy else None
+
+def missed_slides(mine):
+    """Stretches where the engine win% fell SLIDE_DROP+ over SLIDE_MOVES Claude moves while every TREND said same/better."""
+    windows = [(k, k + SLIDE_MOVES - 1) for k in range(len(mine) - SLIDE_MOVES + 1)
+               if mine[k]["win_before"] - mine[k + SLIDE_MOVES - 1]["win_after"] >= SLIDE_DROP
+               and all(r.get("trend") in ("same", "better") for r in mine[k:k + SLIDE_MOVES])]
+    merged = []
+    for start, end in windows:   # overlapping windows become one stretch
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = end
+        else:
+            merged.append([start, end])
+    slides = []
+    for start, end in merged:
+        part = mine[start:end + 1]
+        slides.append(dict(from_move=(part[0]["ply"] + 1) // 2, to_move=(part[-1]["ply"] + 1) // 2,
+                           win_drop=round(part[0]["win_before"] - part[-1]["win_after"], 1),
+                           trends=[r["trend"] for r in part], whys=[r.get("why") for r in part],
+                           fen_start=part[0]["fen_before"], fen_end=part[-1]["fen_before"],
+                           best_pv_start=part[0]["best_pv_san"]))
+    return slides
+
+def calibration(rows):
+    """How well Claude's own EVAL matched the engine (after its move, in pawns, both clipped to +-5)."""
+    mine = [r for r in rows if r["player"] == "Claude"]
+    pairs = [(r["self_eval"], max(-5.0, min(5.0, r["cp_after"] / 100))) for r in mine if r.get("self_eval") is not None]
+    if not pairs:
+        return dict(moves_with_eval=0, mae=None, correlation=None, missed_slides=missed_slides(mine))
+    own, engine = zip(*pairs)
+    return dict(moves_with_eval=len(pairs), mae=round(sum(abs(a - b) for a, b in pairs) / len(pairs), 2),
+                correlation=correlation(own, engine), missed_slides=missed_slides(mine))
 
 def print_table(summary):
     w, b = summary["sides"]["white"], summary["sides"]["black"]
@@ -205,7 +245,17 @@ def review_game(i, games_dir=None, engine=None, quiet=False):
         print_table(summary)
         print_moves(rows)
         print_pairs(rows)
+        print_calibration(summary["calibration"])
     return rows, summary
+
+def print_calibration(cal):
+    print("\nClaude's self-assessment vs the engine:")
+    if not cal["moves_with_eval"]:
+        print("  (no EVAL lines in this game)")
+    else:
+        print(f"  {cal['moves_with_eval']} moves with an EVAL, mean error {cal['mae']} pawns, correlation {cal['correlation']}")
+    for s in cal["missed_slides"]:
+        print(f"  missed slide: moves {s['from_move']}-{s['to_move']}, engine win% -{s['win_drop']}, Claude said {'/'.join(s['trends'])}")
 
 if __name__ == "__main__":   # python review.py 3 [4 5 ...] [--dir games_full]
     args = sys.argv[1:]

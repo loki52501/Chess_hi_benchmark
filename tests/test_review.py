@@ -134,6 +134,35 @@ def test_move_list_marks(capsys):
     out = capsys.readouterr().out
     assert "!!" in out and "2. Nf3" in out and "Mistake" in out and "(-12.4%, best Nf3)" in out and "MISS" in out
 
+def claude_rows(wins, trends, evals=None):   # one Claude move per entry: win% before -> next entry's before
+    rows = []
+    for k, (w, t) in enumerate(zip(wins, trends)):
+        after = wins[k + 1] if k + 1 < len(wins) else w
+        rows.append(dict(ply=2 * k + 1, player="Claude", win_before=w, win_after=after, trend=t, why=f"why{k}",
+                         fen_before=f"fen{k}", best_pv_san=f"pv{k}", cp_after=(evals[k] if evals else 0)))
+    return rows
+
+def test_missed_slide_found_and_merged():
+    wins = [60, 58, 56, 54, 52, 50, 48, 47]                   # -2 per move, never a big drop
+    slides = review.missed_slides(claude_rows(wins, ["same"] * 8))
+    assert len(slides) == 1 and slides[0]["from_move"] == 1 and slides[0]["to_move"] == 7   # window from move 4 only drops 7
+    assert slides[0]["fen_start"] == "fen0" and slides[0]["best_pv_start"] == "pv0" and slides[0]["whys"][0] == "why0"
+
+def test_no_slide_when_claude_said_worse_or_drop_small():
+    wins = [60, 58, 56, 54, 52, 50]
+    assert review.missed_slides(claude_rows(wins, ["same", "same", "worse", "same", "same", "same"])) == []
+    assert review.missed_slides(claude_rows([60, 59, 58, 57, 56, 55], ["same"] * 6)) == []   # 5 moves, -4 only
+    assert review.missed_slides(claude_rows(wins, [None] * 6)) == []                          # old game, no TREND
+
+def test_calibration_mae_and_correlation():
+    rows = claude_rows([50] * 4, ["same"] * 4, evals=[100, -200, 300, 900])   # engine: +1, -2, +3, +5 (clipped)
+    for r, own in zip(rows, [1.5, -2.0, 2.0, 5.0]):
+        r["self_eval"] = own
+    cal = review.calibration(rows)
+    assert cal["moves_with_eval"] == 4 and cal["mae"] == pytest.approx((0.5 + 0 + 1 + 0) / 4, abs=0.01)
+    assert cal["correlation"] > 0.9
+    assert review.calibration(claude_rows([50] * 3, ["same"] * 3))["mae"] is None   # no self_eval at all
+
 def test_pairs(capsys):
     review.print_pairs(fake_rows(["Best", "Great", "Best", "Mistake", "Miss"]))
     out = capsys.readouterr().out

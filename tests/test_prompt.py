@@ -92,6 +92,16 @@ def test_no_endgame_block_in_middlegame_or_when_off(setup, monkeypatch):
     monkeypatch.setattr(match, "ENDGAME_MODE", False)
     assert "ENDGAME - in this phase" not in match.build_prompt(ROOK_ENDING)[0]
 
+def test_own_assessments_shown(setup, monkeypatch):
+    monkeypatch.setattr(match, "assessments", [dict(move_number=n, self_eval=1.0 - n / 10, trend="same", why=f"reason {n}")
+                                               for n in range(30, 37)])
+    prompt = match.build_prompt(ROOK_ENDING)[0]
+    assert "Your own assessments from your last moves:" in prompt
+    assert "  32. -2.2 same - reason 32" in prompt and "reason 31" not in prompt      # only the last 5
+    assert prompt.index("Your own assessments") < prompt.index("THREATS:")
+    monkeypatch.setattr(match, "SELF_ASSESSMENT", False)
+    assert "Your own assessments" not in match.build_prompt(ROOK_ENDING)[0]
+
 def test_basic_prompt_is_the_old_one(setup, monkeypatch):
     monkeypatch.setattr(match, "PROTOCOL", "basic")
     prompt, retrieved, shown, _ = match.build_prompt(ROOK_ENDING)
