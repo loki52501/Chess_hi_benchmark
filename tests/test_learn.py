@@ -104,6 +104,29 @@ def test_retry_once_then_keep_valid(folder, monkeypatch):
     saved = knowledge.load_lessons(str(folder))
     assert [l["rule"] for l in saved] == [NEW["rule"]] and saved[0]["kind"] == "mistake"
 
+def test_retire_is_applied_and_survives_the_rest_of_learning(folder, monkeypatch):
+    knowledge.save_lessons(str(folder), [lesson("L001", game=1), lesson("L002", game=2, tags=["queens_off"])])
+    monkeypatch.setattr(match, "ask_claude", lambda prompt, timeout=None: answer("lessons", {"add": [], "update": [], "retire": ["L002"]}))
+    rows = [row(1, "Claude", "Mistake", loss=12.4), row(2, "Stockfish", "Best")]
+    side = dict(accuracy=80.0, accuracy_by_phase={"opening": None, "middlegame": None, "endgame": 80.0}, counts={"Mistake": 1})
+    learn.learn_lessons(3, rows, {"sides": {"white": side, "black": side}}, "INTRO\n")
+    learn.retire_lessons(0.6)        # the steps that run after it in learn_from_game must not undo the retire
+    learn.promote(3)
+    learn.demote(3, 0.6)
+    learn.save_copies(3)
+    status = {l["id"]: l["status"] for l in knowledge.load_lessons(str(folder))}
+    assert status == {"L001": "active", "L002": "retired"}
+    copy = {l["id"]: l["status"] for l in knowledge.load_jsonl(str(folder / "lessons_after_game_3.jsonl"))}
+    assert copy["L002"] == "retired"
+
+def test_prompt_example_uses_no_real_lesson_ids():
+    lessons = [lesson(f"L00{n}") for n in range(1, 10)]
+    side = dict(accuracy=80.0, accuracy_by_phase={"opening": None, "middlegame": None, "endgame": 80.0}, counts={})
+    prompt = learn.lessons_prompt([row(1, "Claude", "Best")], {"sides": {"white": side, "black": side}}, "", {}, lessons, [], {})
+    example = prompt[prompt.index("<lessons>"):]
+    assert '"retire": []' in example and '"id": "Lxxx"' in example
+    assert not any(f"L00{n}" in example for n in range(1, 10))
+
 # --- the prompt ------------------------------------------------------------------------------------
 
 def test_prompt_sections():
