@@ -3,7 +3,8 @@
    rules_stats.json - per rule: retrieved, helped, created_game, cited_games
    lessons.jsonl  - specific lessons, one JSON object per line, retrieved only when they fit the position
 """
-import json, os, re
+import html, json, os, re
+from xml.sax.saxutils import escape
 
 MAX_RULES = 12
 MAX_RULE_WORDS = 25
@@ -74,6 +75,64 @@ def next_lesson_id(lessons):   # L001, L002, ... retired and promoted lessons st
 
 def help_rate(entry):   # share of citations where the move was Good or better (None = never cited)
     return entry["helped"] / entry["retrieved"] if entry.get("retrieved") else None
+
+# --- principles (learn.py "principles" mode): principles.xml, an ordered decision procedure --------
+
+MAX_WHEN_WORDS = 25
+
+def xml_blocks(text, tag):
+    """[(attributes, inner text)] for every <tag ...>...</tag> in text. Read with regular expressions, not an XML parser,
+    so a reply from Claude with a bare & or < in it still parses."""
+    return [({k: html.unescape(v) for k, v in re.findall(r'([\w-]+)\s*=\s*"([^"]*)"', m.group(1))}, m.group(2))
+            for m in re.finditer(rf"<{tag}\b([^>]*)>(.*?)</{tag}>", text, re.S)]
+
+def xml_field(inner, tag):   # the text of <tag> inside a block, on one line; "" if it isn't there
+    m = re.search(rf"<{tag}\b[^>]*>(.*?)</{tag}>", inner, re.S)
+    return " ".join(html.unescape(m.group(1)).split()) if m else ""
+
+def principle(id, when, do, check, evidence=()):
+    """One principle: WHEN this is true on the board, DO this, and CHECK it with a yes/no question before moving.
+    "rule" is the one-line form the older code (stats, logs) reads."""
+    return dict(id=id, when=when, do=do, check=check, evidence=list(evidence), rule=f"{when.rstrip('.:')}: {do}")
+
+def parse_principles(text):   # every <principle> block in text, in order
+    return [principle(attrs.get("id") or None, xml_field(inner, "when"), xml_field(inner, "do"), xml_field(inner, "check"),
+                      (attrs.get("evidence") or "").replace(",", " ").split())
+            for attrs, inner in xml_blocks(text, "principle")]
+
+def format_principles(principles, note=None):   # the XML shown to Claude and saved in principles.xml
+    lines = ["<principles" + (f' note="{escape(note, {chr(34): "&quot;"})}"' if note else "") + ">"]
+    for p in principles:
+        evidence = f' evidence="{" ".join(p["evidence"])}"' if p.get("evidence") else ""
+        lines += [f'  <principle id="{p["id"]}"{evidence}>', f'    <when>{escape(p["when"])}</when>',
+                  f'    <do>{escape(p["do"])}</do>', f'    <check>{escape(p["check"])}</check>', "  </principle>"]
+    return "\n".join(lines + ["</principles>"]) + "\n"
+
+def load_principles(folder):
+    """principles.xml in order of priority; a folder that only has rules.md yet starts from those rules (WHEN = every move)."""
+    p = path(folder, "principles.xml")
+    if os.path.exists(p):
+        return parse_principles(open(p, encoding="utf-8").read())
+    return [principle(r["id"], "Every move", r["rule"], r["check"]) for r in load_rules(folder)]
+
+def save_principles(folder, principles, name="principles.xml"):
+    with open(path(folder, name), "w", encoding="utf-8") as f:
+        f.write(format_principles(principles))
+
+def principle_problems(p):
+    """Why a principle is not acceptable; [] = fine. Same idea as problems_with: short, about the board, a pattern not squares."""
+    problems = [f"missing <{field}>" for field in ("when", "do", "check") if not p.get(field)]
+    if problems:
+        return problems
+    if words(p["when"]) > MAX_WHEN_WORDS:
+        problems.append(f"<when> has {words(p['when'])} words (max {MAX_WHEN_WORDS})")
+    if words(p["do"]) > MAX_RULE_WORDS:
+        problems.append(f"<do> has {words(p['do'])} words (max {MAX_RULE_WORDS})")
+    if not p["check"].rstrip().endswith("?"):
+        problems.append("<check> must be one yes/no question ending in ?")
+    if not CHESS_NOUN.search(p["when"] + " " + p["do"]):
+        problems.append("<when>/<do> name no piece, pawn, file or king")
+    return problems + pattern_problems("<when>", p["when"], examples_allowed=0) + pattern_problems("<do>", p["do"], examples_allowed=1)
 
 # --- checking what Claude wrote --------------------------------------------------------------------
 

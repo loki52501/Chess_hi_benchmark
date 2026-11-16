@@ -1,5 +1,7 @@
-import chess, chess.pgn, glob, json, os, re
+import chess, chess.engine, chess.pgn, glob, hashlib, json, os, re, sys
 import match, review, knowledge, features   # games folder + Claude, the review, rules.md / lessons.jsonl, position tags
+from xml.sax.saxutils import escape
+import evidence                            # cross-game statistics: winners vs losers ("principles" mode)
 
 MAX_RULES = 12          # "rules" mode: keep the one old-style list short
 LEARN_TIMEOUT = 600     # reviewing a whole game takes longer than one move
@@ -84,6 +86,9 @@ def learn_from_game(i):
     try:
         if match.LEARN_MODE == "rules":
             learn_rules(i, rows, intro)
+        elif match.LEARN_MODE == "principles":
+            update_stats(i, rows)
+            learn_principles(i)
         else:
             update_stats(i, rows)
             learn_lessons(i, rows, summary, intro, boards(game), claude_color(game))
@@ -517,3 +522,229 @@ def save_copies(i):   # history: what the rules and lessons looked like after ga
         f.write(knowledge.format_rules(knowledge.load_rules(folder())))
     with open(match.games_file(f"lessons_after_game_{i}.jsonl"), "w", encoding="utf-8") as f:
         f.writelines(json.dumps(l) + "\n" for l in knowledge.load_lessons(folder()))
+
+# --- "principles" mode: one ordered list of general principles, learned from ALL games ------------
+# After every game:  1. evidence.py computes, in code, what the winners did and why the loser lost (all games so far)
+#                    2. Claude rewrites the whole list of principles from that evidence (XML in, XML out)
+#                    3. the new list is tried on test positions from earlier games and scored by Stockfish;
+#                       it replaces the current list only if it loses less win% there (otherwise nothing changes)
+
+MIN_GAMES = 2            # no principles from a single game
+EVIDENCE_GAMES = 2       # a new or reworded principle must point to evidence items from this many different games
+VALIDATE = True          # step 3; False = always take Claude's new list
+VALIDATE_BAD = 8         # test positions where Claude went wrong (does the new list fix them?) ...
+VALIDATE_BAD_PER_GAME = 2
+VALIDATE_GOOD = 4        # ... and hard positions it got right (does the new list break them?)
+FAILED_ANSWER_LOSS = 25  # win% charged for a test position with no legal move in the answer
+
+PRINCIPLE_RULES = f"""<requirements>
+- At most {knowledge.MAX_RULES} principles, most important first: together they are the procedure you follow before EVERY move, in any position.
+- A principle is general: it must hold in games you have not played yet. It describes a pattern (my king, my castled side, an
+  undefended piece, the enemy's half-open file, my 2nd rank, a piece attacked by a cheaper piece), never one position.
+  No exact squares in <when>; <do> may give one example after "e.g.".
+- <when>: what on the board makes the principle apply, checkable from the position ({knowledge.MAX_WHEN_WORDS} words or fewer). "Every move" is allowed.
+- <do>: what to do then, naming pieces, pawns, files or the king ({knowledge.MAX_RULE_WORDS} words or fewer).
+- <check>: one yes/no question to answer about the candidate move before playing it.
+- evidence="...": the ids (E.., W..) of the turning points / winner moves that show the pattern, from at least {EVIDENCE_GAMES} different games.
+  A pattern seen in one game only is not a principle yet.
+- Keep a current principle only if the numbers support it: give its id and copy it unchanged. If you reword one, leave the id out.
+  Drop principles that were cited at turning points and did not prevent them, unless you can make them checkable.
+- No "be careful", "calculate more", "play better".
+</requirements>"""
+
+def principles_prompt(games, report, current, values):
+    baseline = evidence.average_loss(evidence.all_rows(games, player="Claude"))
+    lines = []
+    for p in current:
+        v = values.get(p["id"])
+        stats = (f'cited_on_moves="{v["cited"]}" avg_win_pct_lost_on_those_moves="{v["avg_loss"]:.1f}" games="{len(v["games"])}"'
+                 if v else 'cited_on_moves="0"')
+        lines.append(f'  <principle id="{p["id"]}" {stats}>\n    <when>{escape(p["when"])}</when>\n    <do>{escape(p["do"])}</do>\n'
+                     f'    <check>{escape(p["check"])}</check>\n  </principle>')
+    return (
+        f"<role>You are Claude. You play chess against Stockfish (skill {match.STOCKFISH_SKILL}) and learn between games. "
+        f"Your record: {evidence.record(games)}. Below is the evidence from ALL {len(games)} games so far, computed by code from a "
+        "full-strength Stockfish review. Your job is to turn it into the general principles you will follow in the next game.</role>\n\n"
+        + report + "\n\n"
+        f'<current_principles note="shown to you before every move so far. Your average over all moves is {baseline:.1f} win% lost per move; '
+        'a principle whose moves lost more than that did not help. principles_cited in a turning point = it was cited and the move still failed">\n'
+        + ("\n".join(lines) or "  (none)") + "\n</current_principles>\n\n"
+        "<task>\n"
+        "1. Inside <analysis>, briefly:\n"
+        "   a. What do the winners do that the losers do not? Use <winner_vs_loser> and <winner_moves>.\n"
+        "   b. Why did the loser lose? Name the 3 to 5 causes that come back in several games, using <why_claude_lost>, "
+        "<weak_positions> and <turning_points>. For each: what was true on the board, and what was the thinking error in <my_reason_then>?\n"
+        "   c. Which current principles failed (cited at turning points, or above-average loss), and why were they not enough?\n"
+        "2. Write the complete new list of principles inside <principles>. It replaces the current list.\n"
+        "</task>\n\n"
+        + PRINCIPLE_RULES + "\n\n"
+        "<answer_format>\n<analysis>\n...\n</analysis>\n<principles>\n"
+        '  <principle id="R01" evidence="E2 E5">   (id only when you keep a current principle unchanged)\n'
+        "    <when>...</when>\n    <do>...</do>\n    <check>...?</check>\n  </principle>\n"
+        '  <principle evidence="E1 E4 W2">\n    <when>...</when>\n    <do>...</do>\n    <check>...?</check>\n  </principle>\n'
+        "</principles>\n</answer_format>")
+
+def same_text(a, b):
+    return all(" ".join(a[k].split()) == " ".join(b[k].split()) for k in ("when", "do", "check"))
+
+def parse_principles(reply, current, items, games_available):
+    """(principles, problems) from Claude's answer: valid principles in order (without final ids yet), and what was wrong."""
+    blocks = knowledge.xml_blocks(reply, "principles")
+    if not blocks:
+        return None, ["no <principles>...</principles> block in the answer"]
+    by_id = {p["id"]: p for p in current}
+    kept, problems = [], []
+    for p in knowledge.parse_principles(blocks[-1][1]):   # the last block: the answer, not a quote of the request
+        name = repr((p["when"] + ": " + p["do"])[:60])
+        bad = knowledge.principle_problems(p)
+        unchanged = p["id"] in by_id and same_text(p, by_id[p["id"]])
+        if not bad and not unchanged:   # new or reworded: must be backed by evidence from several games
+            unknown = [x for x in p["evidence"] if x not in items]
+            games = {items[x]["game"] for x in p["evidence"] if x in items}
+            need = min(EVIDENCE_GAMES, games_available)
+            if unknown:
+                bad.append(f"evidence ids {unknown} do not exist; use ids from <turning_points> / <winner_moves>")
+            elif len(games) < need:
+                bad.append(f"evidence comes from {len(games)} game(s); a principle needs items from {need} different games")
+        if any(same_text(p, q) for q in kept):
+            bad.append("the same principle is already in the list")
+        problems += [f"principle {name}: {b}" for b in bad]
+        if not bad:
+            kept.append(p)
+    if len(kept) > knowledge.MAX_RULES:
+        problems.append(f"{len(kept)} principles; only the first {knowledge.MAX_RULES} are used")
+    return kept[:knowledge.MAX_RULES], problems
+
+def with_ids(candidate, current, stats, i):
+    """Final ids: an unchanged principle keeps its id (and its statistics); a new or reworded one gets a new id, never reused."""
+    by_id = {p["id"]: p for p in current}
+    used = [int(x[1:]) for x in list(stats) + list(by_id) if re.fullmatch(r"R\d+", x)]
+    result, taken = [], set()
+    for p in candidate:
+        if p["id"] in by_id and p["id"] not in taken and same_text(p, by_id[p["id"]]):
+            new_id = p["id"]
+        else:
+            new_id = f"R{max(used, default=0) + 1:02d}"
+            used.append(int(new_id[1:]))
+        taken.add(new_id)
+        result.append(knowledge.principle(new_id, p["when"], p["do"], p["check"], p["evidence"]))
+    return result
+
+# --- step 3: does the new list play better? -----------------------------------------------------
+
+def test_positions(games):
+    """Positions from earlier games to try a list of principles on: Claude's costliest moves, plus hard positions it got right."""
+    mine = evidence.all_rows(games, player="Claude")
+    bad = evidence.spread([r for r in mine if r["loss"] >= evidence.BAD_LOSS], lambda r: -r["loss"], VALIDATE_BAD, VALIDATE_BAD_PER_GAME)
+    good = evidence.spread([r for r in mine if r["cls"] in ("Great", "Best") and (r.get("multipv_gap") or 0) >= HARD_GAP],
+                           lambda r: -r["multipv_gap"], VALIDATE_GOOD, 1)
+    return bad + good
+
+def score_move(engine, board, san, row):
+    """Win% lost by playing san in the position of row (0 = as good as the engine's best move)."""
+    if san == row["best_san"]:
+        return 0.0
+    if san == row["san"]:
+        return row["loss"]
+    after = board.copy(stack=False)
+    after.push_san(san)
+    return round(max(0.0, row["win_before"] - review.win_pct(-review.evaluate(engine(), after)[0][0])), 2)
+
+def play_test(principles, positions, boards_of, engine, cache):
+    """Average win% lost when Claude picks a move in each test position with this list of principles; answers are cached."""
+    key = hashlib.sha1(knowledge.format_principles(principles).encode("utf-8")).hexdigest()[:12]
+    losses = []
+    for row in positions:
+        board = boards_of[row["game"]][row["ply"]]
+        entry = cache.get(f"{key}|{row['fen_before']}")
+        if entry is None:
+            reply = match.ask_claude(match.principles_prompt(board, principles),
+                                     effort=match.CLAUDE_EFFORT_ENDGAME if row["phase"] == "endgame" else match.CLAUDE_EFFORT)
+            found = re.findall(r"MOVE:\s*([^\s*`]+)", reply)
+            san = found[-1].strip(".") if found else None
+            legal = san in [board.san(m) for m in board.legal_moves]
+            entry = dict(move=san, loss=score_move(engine, board, san, row) if legal else FAILED_ANSWER_LOSS)
+            cache[f"{key}|{row['fen_before']}"] = entry
+            match.log(f"  test [{key}] game {row['game']} move {evidence.move_number(row)} ({row['cls']}: {row['san']}, best {row['best_san']}): "
+                      f"now {san} -> lost {entry['loss']:.1f}")
+        losses.append(entry["loss"])
+    return sum(losses) / len(losses) if losses else 0.0
+
+def validate(candidate, current, games):
+    """(candidate's average loss, current list's average loss) on the test positions; lower is better."""
+    cache_file = match.games_file("validation_cache.json")
+    cache = json.load(open(cache_file, encoding="utf-8")) if os.path.exists(cache_file) else {}
+    opened = []
+    def engine():   # Stockfish at full strength, started only if a move has to be scored
+        if not opened:
+            opened.append(chess.engine.SimpleEngine.popen_uci(match.STOCKFISH))
+            opened[0].configure({"Threads": review.REVIEW_THREADS, "Hash": 64})
+        return opened[0]
+    positions, boards_of = test_positions(games), {g["game"]: g["boards"] for g in games}
+    try:
+        old = play_test(current, positions, boards_of, engine, cache)
+        new = play_test(candidate, positions, boards_of, engine, cache)
+    finally:
+        if opened:
+            opened[0].quit()
+        with open(cache_file, "w", encoding="utf-8") as f:
+            json.dump(cache, f)
+    return new, old, len(positions)
+
+def learn_principles(i):
+    games = evidence.load_games(folder())
+    if len(games) < MIN_GAMES:
+        match.log(f"Principles: {len(games)} reviewed game(s) so far, need {MIN_GAMES} - nothing changed")
+        return
+    report, items = evidence.report(games)
+    with open(match.games_file(f"evidence_after_game_{i}.xml"), "w", encoding="utf-8") as f:
+        f.write(report + "\n")
+    current, stats = knowledge.load_principles(folder()), knowledge.load_stats(folder())
+    prompt = principles_prompt(games, report, current, evidence.rule_values(games))
+    reply = match.ask_claude(prompt, timeout=LEARN_TIMEOUT, effort="high")
+    match.log_file(reply)
+    candidate, problems = parse_principles(reply, current, items, len(games))
+    if problems:   # ask once more, then keep whatever is valid
+        match.log("[!] Problems in the principles answer, asking once more:\n" + "\n".join(f"  - {p}" for p in problems))
+        reply = match.ask_claude(prompt + f"\n\n<previous_answer>\n{reply}\n</previous_answer>\n<problems>\n"
+                                 + "\n".join(f"- {p}" for p in problems) + "\n</problems>\n"
+                                 "Send the complete corrected <principles> block again.", timeout=LEARN_TIMEOUT, effort="high")
+        match.log_file(reply)
+        candidate, problems = parse_principles(reply, current, items, len(games))
+        if problems:
+            match.log("[!] Still invalid, left out:\n" + "\n".join(f"  - {p}" for p in problems))
+    if not candidate:
+        match.log("[!] No usable principles in Claude's answer - keeping the current ones")
+        return
+    candidate = with_ids(candidate, current, stats, i)
+    knowledge.save_principles(folder(), candidate, f"principles_candidate_after_game_{i}.xml")
+    entry = dict(game=i, games_used=len(games), candidate=[p["id"] for p in candidate], adopted=True)
+    if VALIDATE and current:
+        new, old, n = validate(candidate, current, games)
+        entry.update(test_positions=n, candidate_loss=round(new, 2), current_loss=round(old, 2), adopted=new < old)
+        match.log(f"Test on {n} positions from earlier games: new principles lose {new:.1f} win% per move, current ones {old:.1f} "
+                  f"-> {'ADOPTED' if new < old else 'REJECTED, keeping the current principles'}")
+    with open(match.games_file("principles_history.jsonl"), "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry) + "\n")
+    if entry["adopted"]:
+        knowledge.save_principles(folder(), candidate)
+        for p in candidate:
+            stats.setdefault(p["id"], knowledge.new_rule_stats(i))
+        knowledge.save_stats(folder(), stats)
+        before = {p["id"] for p in current}
+        match.log(f"Principles after game {i}:\n" + "\n".join(
+            f"  {'    ' if p['id'] in before else 'NEW '}[{p['id']}] WHEN {p['when']} DO {p['do']} CHECK {p['check']}" for p in candidate))
+    knowledge.save_principles(folder(), knowledge.load_principles(folder()), f"principles_after_game_{i}.xml")
+
+if __name__ == "__main__":   # python learn.py evidence | python learn.py distill   (on the games already in the folder)
+    command = sys.argv[1] if len(sys.argv) > 1 else ""
+    played = [g["game"] for g in evidence.load_games(folder())]
+    if command == "evidence":
+        print(evidence.report(evidence.load_games(folder()))[0])
+    elif command == "distill" and played:
+        match.claude_log = open(match.games_file(f"learn_{played[-1]}_principles.log"), "w", encoding="utf-8")
+        learn_principles(played[-1])
+        match.claude_log.close()
+    else:
+        sys.exit("usage: python learn.py evidence   (print the cross-game evidence)\n"
+                 "       python learn.py distill    (learn principles now from the reviewed games in the games folder)")

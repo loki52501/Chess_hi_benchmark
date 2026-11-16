@@ -1,7 +1,9 @@
 import chess, chess.engine, chess.pgn, subprocess, shutil, re, datetime, os, json, sys, time
 import knowledge, features, prompts   # rules.md + lessons.jsonl, what is on the board, the move prompts
 
-STOCKFISH = r"E:\apps\stockfish-windows-x86-64-avx2\stockfish\stockfish-windows-x86-64-avx2.exe"  # change to your stockfish path
+# Stockfish: the STOCKFISH environment variable, else "stockfish" on the PATH (Linux / cloud), else this Windows path
+STOCKFISH = (os.environ.get("STOCKFISH") or shutil.which("stockfish")
+             or r"E:\apps\stockfish-windows-x86-64-avx2\stockfish\stockfish-windows-x86-64-avx2.exe")
 STOCKFISH_SKILL = 10                        # 0 (weakest) .. 20 (strongest)
 CLAUDE_COLOR = chess.WHITE                  # chess.WHITE or chess.BLACK (experiment.py alternates)
 CLAUDE = shutil.which("claude")             # path to the Claude Code CLI
@@ -11,7 +13,10 @@ CLAUDE_EFFORT_ENDGAME = "high"              # used instead of CLAUDE_EFFORT once
 CLAUDE_TIMEOUT = 300                        # seconds per answer; slower = attempt fails and Claude is asked again
 TIMED_OUT = "(no answer - timed out)"       # what ask_claude returns when Claude Code took too long
 GAMES_DIR = "games"                         # game_<i>.log (moves), game_<i>.pgn and claude_<i>.log (thinking) go here
-LEARN_MODE = "lessons"                      # "lessons": rules.md + lessons.jsonl (learn.py); "rules": one old-style rules.md list
+# "principles": one ordered list of general principles (principles.xml), re-derived after every game from ALL games:
+#               what the winners did, why the loser lost; a new list is only kept if it plays better on test positions
+# "lessons": rules.md + position-specific lessons.jsonl; "rules": one old-style rules.md list
+LEARN_MODE = os.environ.get("LEARN_MODE", "principles")
 PROTOCOL = "full"                           # "full": forcing structure, rules + lessons for this position; "basic": the old prompt
 LESSONS_PER_MOVE = 5                        # lessons retrieved for each position (full protocol)
 ENDGAME_MODE = True                         # full protocol: endgame principles + reference positions once in an endgame
@@ -37,7 +42,7 @@ def load_rules():   # the whole rules.md as text
     return open(path, encoding="utf-8").read().strip() if os.path.exists(path) else ""
 
 def init_games_dir():   # a new folder starts from seeds/; an old-style rules.md is migrated in "lessons" mode
-    knowledge.init_folder(GAMES_DIR, LEARN_MODE)
+    knowledge.init_folder(GAMES_DIR, "rules" if LEARN_MODE == "rules" else "lessons")
 
 def log(text):   # claude_<i>.log + screen (and GUI)
     log_file(text)   # the file first, so nothing is lost even if the screen can't show the text
@@ -133,10 +138,19 @@ def log_retrieval(true_tags, phase, picked, top=10):   # why each lesson was or 
                      f"(features: {', '.join(l.get('features') or []) or '-'}; phase {l['phase']})")
     log_file("\n".join(lines))
 
+def principles_prompt(board, principles, own=()):   # the XML move prompt for this position with this list of principles
+    f = features.features(board, board.turn)
+    endgame = ENDGAME_MODE and f["phase"] == "endgame"
+    refs = features.closest_refs(board, knowledge.load_jsonl(ENDGAME_REFS)) if endgame else []
+    return prompts.xml_prompt(board, STOCKFISH_SKILL, principles, features.header(f), refs, endgame, own)
+
 def build_prompt(board):   # (prompt, retrieved lesson ids, ids shown, phase)
     f = features.features(board, board.turn)
     if PROTOCOL == "basic":
         return prompts.basic_prompt(board, rules), [], set(), f["phase"]
+    if LEARN_MODE == "principles":   # no position-specific lessons: the same principles decide every move
+        own = assessments[-ASSESSMENTS_SHOWN:] if SELF_ASSESSMENT else []
+        return principles_prompt(board, rule_list, own), [], {r["id"] for r in rule_list}, f["phase"]
     true_tags = features.tags(board, board.turn)
     picked = features.retrieve(lessons, true_tags, f["phase"], LESSONS_PER_MOVE)
     log_retrieval(true_tags, f["phase"], picked)
@@ -206,6 +220,8 @@ def play_game(on_move=lambda board: None, i=None, resume=False):   # on_move is 
         init_games_dir()
         rules = load_rules()   # the latest rules and lessons, so every new game uses everything learned so far
         rule_list, lessons = knowledge.load_rules(GAMES_DIR), knowledge.load_lessons(GAMES_DIR)
+        if LEARN_MODE == "principles":
+            rule_list = knowledge.load_principles(GAMES_DIR)
 
         i = i or next_game_number()
         earlier = unfinished_moves(i) if resume else []
