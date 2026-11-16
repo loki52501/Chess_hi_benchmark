@@ -1,11 +1,13 @@
 """Run the Claude-vs-Stockfish series in an E2B cloud sandbox, from your own computer.
 
     pip install e2b
-    set E2B_API_KEY=...          (Windows; "export" on Linux/Mac)   from https://e2b.dev/dashboard
+    Put the keys in a file named .env next to this script (it is in .gitignore), one NAME=value per line,
+    or set them in the terminal ("set NAME=value" on Windows, "export" on Linux/Mac):
+    E2B_API_KEY=...              from https://e2b.dev/dashboard
     Claude Code's login inside the sandbox - set ONE of these:
-    set CLAUDE_CODE_OAUTH_TOKEN=...   your Claude subscription: run "claude setup-token" on this computer and copy the token
-    set ANTHROPIC_API_KEY=...         or an API key (billed per token)
-    The model is match.CLAUDE_MODEL (claude-opus-5-5); "set CLAUDE_MODEL=..." here to use another one.
+    CLAUDE_CODE_OAUTH_TOKEN=...   your Claude subscription: run "claude setup-token" on this computer and copy the token
+    ANTHROPIC_API_KEY=...         or an API key (billed per token)
+    The model is match.CLAUDE_MODEL (claude-opus-5-5); add CLAUDE_MODEL=... to use another one.
 
     python e2b_run.py start      new sandbox: install Stockfish, clone the repo, upload games/, start series.py, then watch
     python e2b_run.py watch      keep an already started sandbox going (run this again if your computer slept)
@@ -19,6 +21,16 @@ which starts the hour again; the running series survives the pause. If "watch" i
 after 55 minutes and nothing is lost: run "watch" again to continue.
 """
 import io, os, sys, tarfile, time
+
+def load_env(path=os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")):
+    """NAME=value lines from .env into the environment (quotes and "export " are fine); a variable already set wins."""
+    if os.path.exists(path):
+        for line in open(path, encoding="utf-8-sig"):
+            name, sep, value = line.strip().removeprefix("export ").partition("=")
+            if sep and name.strip() and not name.lstrip().startswith("#"):
+                os.environ.setdefault(name.strip(), value.strip().strip("'\""))
+
+load_env()   # before importing e2b, which reads E2B_API_KEY
 from e2b import Sandbox
 
 REPO = "https://github.com/loki52501/Chess_hi_benchmark.git"
