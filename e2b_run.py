@@ -83,7 +83,8 @@ def running(sbx):
     return "series.py" in sh(sbx, "pgrep -af 'python3 -u series.py' || true", check=False)
 
 def status(sbx):
-    print(sh(sbx, "grep -a '#####' series.out | tail -3; echo ...; tail -n 12 series.out", check=False))
+    print(sh(sbx, "grep -a '#####' series.out | tail -3; echo ...; tail -n 12 series.out; echo ...; "
+                  "ls games/game_*.pgn | wc -l | sed 's/$/ game files so far/'", check=False), flush=True)
 
 def launch(sbx, script):   # start a long job that keeps running after this command returns
     sbx.commands.run(f"cd {WORK} && nohup {RUN} {script} >> series.out 2>&1", background=True, timeout=0)
@@ -122,10 +123,14 @@ def start():
     watch(sbx)
 
 def watch(sbx):
-    last_pause = time.time()
+    last_pause, wait = time.time(), 30   # first look after 30 seconds, then every CHECK_EVERY
+    print(f"Watching. First progress report in {wait} seconds, then every {CHECK_EVERY // 60} minutes. Ctrl+C stops watching "
+          "(the games go on).", flush=True)
     try:
         while True:
-            time.sleep(CHECK_EVERY)
+            time.sleep(wait)
+            wait = CHECK_EVERY
+            print(f"\n===== {time.strftime('%H:%M:%S')} - series.py {'is running' if running(sbx) else 'is NOT running'} =====", flush=True)
             status(sbx)
             pull(sbx)
             if not running(sbx):
