@@ -7,7 +7,7 @@ STOCKFISH = (os.environ.get("STOCKFISH") or shutil.which("stockfish")
 STOCKFISH_SKILL = 10                        # 0 (weakest) .. 20 (strongest)
 CLAUDE_COLOR = chess.WHITE                  # chess.WHITE or chess.BLACK (experiment.py alternates)
 CLAUDE = shutil.which("claude")             # path to the Claude Code CLI
-CLAUDE_MODEL = "opus"                     # sonnet / opus / haiku, or a full id like claude-opus-5-5
+CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-opus-5-5")   # Opus 5.5; or sonnet / opus / haiku, or another full id
 CLAUDE_EFFORT = "medium"                    # how hard Claude thinks: low / medium / high / xhigh / max (higher = slower)
 CLAUDE_EFFORT_ENDGAME = "high"              # used instead of CLAUDE_EFFORT once the position is an endgame
 CLAUDE_TIMEOUT = 300                        # seconds per answer; slower = attempt fails and Claude is asked again

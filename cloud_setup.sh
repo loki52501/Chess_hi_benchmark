@@ -3,7 +3,11 @@
 # games/ is not in git: copy your games folder over as well (scp -r games user@host:chess_comp/) to keep what was learned.
 set -e
 sudo apt-get update
-sudo apt-get install -y stockfish python3-pip tmux nodejs npm
+sudo apt-get install -y python3-pip tmux nodejs npm curl
+if ! sudo apt-get install -y stockfish; then   # no apt package (e.g. a Claude Code cloud session): the official Linux build
+  mkdir -p "$HOME/stockfish" && curl -sSL https://github.com/official-stockfish/Stockfish/releases/download/sf_17.1/stockfish-ubuntu-x86-64-avx2.tar | tar x -C "$HOME/stockfish" --strip-components=1
+  echo "Stockfish is at $HOME/stockfish/stockfish-ubuntu-x86-64-avx2 - use that path for STOCKFISH= below"
+fi
 pip3 install --user chess pytest || pip3 install --user --break-system-packages chess pytest
 command -v claude >/dev/null || sudo npm install -g @anthropic-ai/claude-code   # the Claude Code CLI that match.py calls
 echo
