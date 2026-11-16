@@ -2,7 +2,10 @@
 
     pip install e2b
     set E2B_API_KEY=...          (Windows; "export" on Linux/Mac)   from https://e2b.dev/dashboard
-    set ANTHROPIC_API_KEY=...    Claude's moves are billed to this key, not to E2B
+    Claude Code's login inside the sandbox - set ONE of these:
+    set CLAUDE_CODE_OAUTH_TOKEN=...   your Claude subscription: run "claude setup-token" on this computer and copy the token
+    set ANTHROPIC_API_KEY=...         or an API key (billed per token)
+    The model is match.CLAUDE_MODEL (claude-opus-5-5); "set CLAUDE_MODEL=..." here to use another one.
 
     python e2b_run.py start      new sandbox: install Stockfish, clone the repo, upload games/, start series.py, then watch
     python e2b_run.py watch      keep an already started sandbox going (run this again if your computer slept)
@@ -71,11 +74,15 @@ def launch(sbx, script):   # start a long job that keeps running after this comm
     sbx.commands.run(f"cd {WORK} && nohup {RUN} {script} >> series.out 2>&1", background=True, timeout=0)
 
 def start():
-    for key in ("E2B_API_KEY", "ANTHROPIC_API_KEY"):
-        if not os.environ.get(key):
-            sys.exit(f"Set {key} first (see the top of this file).")
-    sbx = Sandbox.create(TEMPLATE, timeout=LIFETIME, envs={"ANTHROPIC_API_KEY": os.environ["ANTHROPIC_API_KEY"]},
-                         lifecycle={"on_timeout": "pause"})
+    if not os.environ.get("E2B_API_KEY"):
+        sys.exit("Set E2B_API_KEY first (see the top of this file).")
+    login = next((k for k in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY") if os.environ.get(k)), None)
+    if not login:
+        sys.exit("Set CLAUDE_CODE_OAUTH_TOKEN (subscription) or ANTHROPIC_API_KEY first (see the top of this file).")
+    envs = {login: os.environ[login]}   # only one: Claude Code complains when both are set
+    if os.environ.get("CLAUDE_MODEL"):
+        envs["CLAUDE_MODEL"] = os.environ["CLAUDE_MODEL"]
+    sbx = Sandbox.create(TEMPLATE, timeout=LIFETIME, envs=envs, lifecycle={"on_timeout": "pause"})
     with open(ID_FILE, "w") as f:
         f.write(sbx.sandbox_id)
     print(f"Sandbox {sbx.sandbox_id} created. Installing Stockfish and python-chess ...")
@@ -86,6 +93,12 @@ def start():
     print(sh(sbx, "/usr/games/stockfish --help 2>&1 | head -1; claude --version; "
                   "python3 -c \"import chess, match; print('python-chess', chess.__version__, '| stockfish:', match.STOCKFISH)\"",
              check=False))
+    answer = sh(sbx, "python3 -c \"import match; print(match.CLAUDE_MODEL, '->', match.ask_claude('Reply with the single word OK', timeout=120))\"",
+                timeout=180, check=False)
+    print(f"Claude Code check ({login}): {answer.strip()}")
+    if "OK" not in answer.split("->")[-1]:
+        sys.exit("Claude Code did not answer inside the sandbox, so no game was started. Fix the login, then run\n"
+                 "'python e2b_run.py stop' and 'python e2b_run.py start' again.")
     launch(sbx, "series.py")
     print("series.py started.")
     watch(sbx)
