@@ -80,7 +80,8 @@ def pull(sbx):
     print(f"Saved the sandbox's games/ into ./games ({len(data) / 1e6:.1f} MB)")
 
 def running(sbx):
-    return "series.py" in sh(sbx, "pgrep -af 'python3 -u series.py' || true", check=False)
+    # [p]ython3: so pgrep doesn't match the shell that runs this very command (its command line contains the pattern)
+    return "series.py" in sh(sbx, "pgrep -af '[p]ython3 -u series.py' || true", check=False)
 
 def status(sbx):
     print(sh(sbx, "grep -a '#####' series.out | tail -3; echo ...; tail -n 12 series.out; echo ...; "
