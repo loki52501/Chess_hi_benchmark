@@ -7,3 +7,5 @@ games/
 games_*/
 experiments/
 __pycache__/
+# e2b_run.py: id of the running sandbox
+.e2b_sandbox
