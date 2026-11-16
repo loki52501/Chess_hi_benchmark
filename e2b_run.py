@@ -41,7 +41,7 @@ ID_FILE = ".e2b_sandbox"       # remembers the sandbox between commands
 LIFETIME = 55 * 60             # seconds until the sandbox pauses itself if nobody renews it
 CHUNK = 50 * 60                # "watch" pauses + resumes this often, which restarts E2B's 1-hour clock
 CHECK_EVERY = 5 * 60           # "watch" prints the progress and saves games/ this often
-RUN = "STOCKFISH=/usr/games/stockfish python3 -u"
+RUN = "env STOCKFISH=/usr/games/stockfish python3 -u"   # "env" so it also works after nohup
 
 def sh(sbx, command, timeout=600, check=True):
     """Run a shell command in the sandbox; returns its output (stdout + stderr)."""
@@ -73,7 +73,10 @@ def pull(sbx):
     sh(sbx, f"tar czf {HOME}/games_out.tar.gz games")
     data = sbx.files.read(f"{HOME}/games_out.tar.gz", format="bytes")
     with tarfile.open(fileobj=io.BytesIO(bytes(data)), mode="r:gz") as tar:
-        tar.extractall(".")
+        try:
+            tar.extractall(".", filter="data")   # Python 3.12+: plain files only
+        except TypeError:
+            tar.extractall(".")
     print(f"Saved the sandbox's games/ into ./games ({len(data) / 1e6:.1f} MB)")
 
 def running(sbx):
@@ -103,15 +106,18 @@ def start():
     sh(sbx, f"git clone --depth 1 {REPO} {WORK}")
     upload_games(sbx)
     print(sh(sbx, "/usr/games/stockfish --help 2>&1 | head -1; claude --version; "
-                  "python3 -c \"import chess, match; print('python-chess', chess.__version__, '| stockfish:', match.STOCKFISH)\"",
+                  f"{RUN} -c \"import chess, match; print('python-chess', chess.__version__, '| stockfish:', match.STOCKFISH)\"",
              check=False))
-    answer = sh(sbx, "python3 -c \"import match; print(match.CLAUDE_MODEL, '->', match.ask_claude('Reply with the single word OK', timeout=120))\"",
+    answer = sh(sbx, f"{RUN} -c \"import match; print(match.CLAUDE_MODEL, '->', match.ask_claude('Reply with the single word OK', timeout=120))\"",
                 timeout=180, check=False)
     print(f"Claude Code check ({login}): {answer.strip()}")
     if "OK" not in answer.split("->")[-1]:
         sys.exit("Claude Code did not answer inside the sandbox, so no game was started. Fix the login, then run\n"
                  "'python e2b_run.py stop' and 'python e2b_run.py start' again.")
     launch(sbx, "series.py")
+    time.sleep(20)
+    if not running(sbx):
+        sys.exit("series.py stopped right after starting:\n" + sh(sbx, "tail -n 20 series.out", check=False))
     print("series.py started.")
     watch(sbx)
 
